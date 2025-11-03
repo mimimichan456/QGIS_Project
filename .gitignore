@@ -1,0 +1,25 @@
+# QGIS project temporary files
+*.aux.xml
+*.qml
+*.qgd
+*.qmd
+*.qgz~
+*.qgs~
+*.bak
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS / Editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Virtual environments
+venv/
+.env/
+
+# Output / cache / data
+data/tmp/
+logs/
