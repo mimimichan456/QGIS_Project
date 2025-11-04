@@ -6,10 +6,13 @@
 *.qgz~
 *.qgs~
 *.bak
+*.geojson
 
-# Python cache
+# キャッシュ類は除外
+.cache/
 __pycache__/
 *.pyc
+~/.cache/
 
 # OS / Editor files
 .DS_Store
