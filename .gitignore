@@ -9,10 +9,9 @@
 *.geojson
 
 # キャッシュ類は除外
-.cache/
+cache/
 __pycache__/
 *.pyc
-~/.cache/
 
 # OS / Editor files
 .DS_Store
