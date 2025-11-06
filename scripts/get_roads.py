@@ -3,7 +3,7 @@ import osmnx as ox
 
 # ======= 設定 =======
 place_name = "Ube, Yamaguchi, Japan"
-data_dir = os.path.join(os.path.dirname(__file__), "../.data")  # .dataフォルダ（スクリプトの1階層上）
+data_dir = os.path.join(os.path.dirname(__file__), "../data")
 output_path = os.path.join(data_dir, "ube_pedestrian_roads.geojson")
 
 print(f"📍 保存先: {output_path}")

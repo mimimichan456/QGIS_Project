@@ -7,6 +7,11 @@
 *.qgs~
 *.bak
 *.geojson
+*.shp
+*.dbf
+*.prj
+*.shx
+*.xml
 
 # キャッシュ類は除外
 cache/
