@@ -3,7 +3,7 @@ import sys, os
 sys.path.append("/Users/segawamizuto/QGIS_Project")
 
 from scripts.QGIS.qgis_env import QgisSession
-from scripts.QGIS.nearest_shelter import find_nearest_shelter
+from scripts.QGIS.find_shelter import find_nearest_shelter
 import networkx as nx
 from math import hypot
 from qgis.core import (
@@ -20,27 +20,18 @@ from qgis.core import (
     QgsCoordinateReferenceSystem
 )
 from qgis.PyQt.QtCore import QVariant
-
+from scripts.QGIS.dlite_core import DStarLite
+from scripts.QGIS.save_route import save_route_to_shapefile
 
 def run_dlite_distance_only(project_path: str):
-    """
-    D* Lite（距離のみ）版（実質 Dijkstra）歩行者専用。
-    """
-    import networkx as nx
-    from math import hypot
-    from qgis.core import QgsProject
-
     with QgisSession() as qgs:
         project = QgsProject.instance()
         project.read(project_path)
-        print("✅ QGIS Project Loaded")
 
         # --- 出発点とゴール ---
         res = find_nearest_shelter(project)
         start_point = res["start_point"]
         goal_point  = res["goal_point"]
-        print(f"🏫 Start: {start_point}")
-        print(f"🏁 Goal:  {goal_point}")
 
         # --- 道路レイヤ ---
         roads = project.mapLayersByName("ube_loads")[0]
@@ -107,8 +98,9 @@ def run_dlite_distance_only(project_path: str):
 
         # --- 最短経路探索 ---
         try:
-            #最短ルートのノード順を取得
-            route = nx.shortest_path(G, source=start_id, target=goal_id, weight="weight")
+            dlite = DStarLite(G, start_id, goal_id, node_positions)
+            dlite.compute_shortest_path()
+            route = dlite.extract_path()
             #最短ルートの距離を取得
             total_dist = nx.shortest_path_length(G, source=start_id, target=goal_id, weight="weight")
         #道路がリンクしていない場合終了    
@@ -116,80 +108,117 @@ def run_dlite_distance_only(project_path: str):
             print("❌ No Path Found.")
             return None
 
-        print(f"📏 Total Distance: {total_dist:.2f} m")
-        print(f"🛣️ Route Node Count: {len(route)}")
+        print(f"📏 距離: {total_dist:.2f} m")
+        print(f"🛣️ ノード数: {len(route)}")
 
-        # --- QGISで描ける道路形状に変換 ---
-        route_coords = []
-        for i in range(len(route) - 1):
-            u, v = route[i], route[i + 1]
-            geom_line = edge_geom_map.get((u, v))
-            if not geom_line:
-                continue
-
-            #重複除去（前終点＝次始点なら1点削除）
-            if route_coords and (
-                route_coords[-1].x() == geom_line[0].x() and route_coords[-1].y() == geom_line[0].y()
-            ):
-                geom_line = geom_line[1:]
-
-            route_coords.extend(geom_line)
-
+        # --- 結果を反映 ---
         return {
             "start": start_point,
             "goal": goal_point,
             "distance_m": total_dist,
             "route_nodes": route,
-            "route_coords": [(p.x(), p.y()) for p in route_coords],
+            "graph": G,
+            "node_positions": node_positions,
+            "edge_geom_map": edge_geom_map,
         }
+
     
 
 
 
+#他のファイルから実行された場合は無視
 if __name__ == "__main__":
-    result = run_dlite_distance_only("/Users/segawamizuto/QGIS_Project/Ube_Project.qgz")
+    project_path = "/Users/segawamizuto/QGIS_Project/Ube_Project.qgz"
+    result = run_dlite_distance_only(project_path)
     if not result:
         sys.exit("❌ 経路が見つかりませんでした")
 
-    # --- 出力ファイル作成 ---
-    route_points = [QgsPointXY(x, y) for x, y in result["route_coords"]]
-    route_geom = QgsGeometry.fromPolylineXY(route_points)
+    # グラフ保持
+    G = result["graph"]
+    node_positions = result["node_positions"]
+    edge_geom_map = result["edge_geom_map"]
+    start_id = result["route_nodes"][0]
+    goal_id = result["route_nodes"][-1]
 
-    crs = QgsCoordinateReferenceSystem("EPSG:6668")  
+    # --- 初回D* Lite探索 ---
+    dlite = DStarLite(G, start_id, goal_id, node_positions)
+    dlite.compute_shortest_path()
 
-    output_path = "/Users/segawamizuto/QGIS_Project/data/route/Dlite_Route.shp"
+    path = dlite.extract_path()
+    if not path:
+        print("❌ 経路が見つかりません")
+        sys.exit()
 
-    # --- 属性定義 ---
-    fields = QgsFields()
-    f1 = QgsField()
-    f1.setName("distance_m")
-    f1.setType(QVariant.Double)
-    f2 = QgsField()
-    f2.setName("node_count")
-    f2.setType(QVariant.Int)
-    fields.append(f1)
-    fields.append(f2)
+    # --- 道路形状に沿った座標列を構築 ---
+    route_coords = []
+    for i in range(len(path) - 1):
+        u, v = path[i], path[i + 1]
+        geom_line = result["graph"].edges[u, v].get("geom") if "geom" in result["graph"].edges[u, v] else None
+        if not geom_line:
+            geom_line = edge_geom_map.get((u, v))
+        if not geom_line:
+            continue
 
-    feat = QgsFeature()
-    feat.setGeometry(route_geom)
-    feat.setAttributes([result["distance_m"], len(result["route_nodes"])])
+        if route_coords and (
+            route_coords[-1][0] == geom_line[0].x() and route_coords[-1][1] == geom_line[0].y()
+        ):
+            geom_line = geom_line[1:]
+        route_coords.extend(geom_line)
 
-    # --- 出力オプション ---
-    options = QgsVectorFileWriter.SaveVectorOptions()
-    options.driverName = "ESRI Shapefile"
-    options.fileEncoding = "UTF-8"
-    options.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteFile
+    result["route_nodes"] = path
+    result["route_coords"] = [(p.x(), p.y()) for p in route_coords]
 
-    # ✅ CRSを明示的に指定
-    writer = QgsVectorFileWriter.create(
-        output_path,
-        fields,
-        QgsWkbTypes.LineString,
-        crs,  # ← ここで指定
-        QgsCoordinateTransformContext(),
-        options
-    )
-    writer.addFeature(feat)
-    del writer  # 保存を確定
 
-    print(f"💾 ルートを上書き保存しました（CRS: {crs.authid()}） → {output_path}")
+    # 初回経路保存
+    save_route_to_shapefile(result)
+
+    # --- 対話モード ---
+    while True:
+        cmd = input("\n>>> 通行止め道路を指定 (u v) / q: ").strip().lower()
+        if cmd == "q":
+            print("👋 終了します")
+            break
+
+        try:
+            u, v = map(int, cmd.split())
+        except ValueError:
+            print("⚠️ 'u v' の形式で入力してください")
+            continue
+
+        if not G.has_edge(u, v):
+            print("⚠️ その道路は存在しません")
+            continue
+
+        G[u][v]["weight"] = float("inf")
+        print(f"🚧 通行止め設定: {u} → {v}")
+
+        dlite.update_vertex(u)
+        dlite.update_vertex(v)
+        dlite.compute_shortest_path()
+
+        path = dlite.extract_path()
+        if not path:
+            print("❌ 経路が見つかりません")
+            continue
+
+        # --- 道路形状を再構築して保存 ---
+        route_coords = []
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            geom_line = edge_geom_map.get((u, v))
+            if not geom_line:
+                continue
+            if route_coords and (
+                route_coords[-1].x() == geom_line[0].x() and route_coords[-1].y() == geom_line[0].y()
+            ):
+                geom_line = geom_line[1:]
+            route_coords.extend(geom_line)
+
+        result["route_nodes"] = path
+        result["route_coords"] = [(p.x(), p.y()) for p in route_coords]
+        result["distance_m"] = sum(G[path[i]][path[i + 1]]["weight"] for i in range(len(path) - 1))
+
+        print(f"📏 距離: {result['distance_m']:.2f} m")
+        print(f"🛣️ ノード数: {len(path)}")
+
+        save_route_to_shapefile(result)
