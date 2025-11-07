@@ -12,6 +12,8 @@
 *.prj
 *.shx
 *.xml
+*.cpg
+*.db
 
 # キャッシュ類は除外
 cache/
