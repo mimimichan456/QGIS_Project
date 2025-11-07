@@ -10,9 +10,7 @@ class QgisSession:
         QgsApplication.setPrefixPath("/Applications/QGIS.app/Contents/MacOS", True)
         self.qgs = QgsApplication([], False)
         self.qgs.initQgis()
-        print("✅ QGIS started")
         return self.qgs
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.qgs.exitQgis()
-        print("🛑 QGIS closed")

@@ -9,32 +9,14 @@ from qgis.core import (
 
 
 def find_nearest_shelter(project_or_path, univ_name="ube_university", shelter_name="ube_shelters"):
-    """
-    大学から最寄り避難所を探索する関数
-
-    Args:
-        project_or_path (str or QgsProject): 
-            QGISプロジェクト(.qgz)のパス もしくは QgsProject インスタンス
-        univ_name (str): 大学レイヤ名
-        shelter_name (str): 避難所レイヤ名
-
-    Returns:
-        dict: {
-            'start_point': QgsPointXY,
-            'goal_point': QgsPointXY,
-            'distance_m': float,
-            'shelter_attr': list
-        }
-    """
-
-    # ✅ もし文字列パスが渡された場合のみプロジェクトを開く
+    #字列パスが渡された場合のみプロジェクトを開く
     if isinstance(project_or_path, str):
         project = QgsProject.instance()
         project.read(project_or_path)
     else:
-        project = project_or_path  # すでに開かれたプロジェクトを利用
+        project = project_or_path
 
-    # --- レイヤ取得 ---
+    # --- 大学と避難所を取得 ---
     univ_layer = project.mapLayersByName(univ_name)[0]
     shelter_layer = project.mapLayersByName(shelter_name)[0]
 
@@ -56,6 +38,7 @@ def find_nearest_shelter(project_or_path, univ_name="ube_university", shelter_na
     goal_attr = None
 
     for f in shelter_layer.getFeatures():
+        # 避難所の位置取得と変換
         p = transform_shelter.transform(f.geometry().asPoint())
         dist = distance_calc.measureLine(QgsPointXY(start_point), QgsPointXY(p))
         if dist < min_dist:
