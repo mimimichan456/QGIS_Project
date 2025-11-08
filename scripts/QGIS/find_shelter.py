@@ -1,54 +1,44 @@
 # nearest_shelter.py
-from qgis.core import (
-    QgsProject,
-    QgsCoordinateReferenceSystem,
-    QgsCoordinateTransform,
-    QgsDistanceArea,
-    QgsPointXY
-)
+import geopandas as gpd
+from shapely.geometry import Point
+from pyproj import Transformer
 
+def find_nearest_shelter(
+    univ_path="/Users/segawamizuto/QGIS_Project/data/raw/university/ube_university.shp",
+    shelter_path="/Users/segawamizuto/QGIS_Project/data/processed/shelters/ube_shelters.shp"
+):
+    # --- シェープファイル読込 ---
+    gdf_univ = gpd.read_file(univ_path)
+    gdf_shelter = gpd.read_file(shelter_path)
 
-def find_nearest_shelter(project_or_path, univ_name="ube_university", shelter_name="ube_shelters"):
-    #字列パスが渡された場合のみプロジェクトを開く
-    if isinstance(project_or_path, str):
-        project = QgsProject.instance()
-        project.read(project_or_path)
-    else:
-        project = project_or_path
-
-    # --- 大学と避難所を取得 ---
-    univ_layer = project.mapLayersByName(univ_name)[0]
-    shelter_layer = project.mapLayersByName(shelter_name)[0]
-
-    # --- 座標系をWGS84に統一 ---
-    to_wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
-    transform_univ = QgsCoordinateTransform(univ_layer.crs(), to_wgs84, project)
-    transform_shelter = QgsCoordinateTransform(shelter_layer.crs(), to_wgs84, project)
+    # --- 座標系統一（EPSG:4326に変換） ---
+    gdf_univ = gdf_univ.to_crs(epsg=4326)
+    gdf_shelter = gdf_shelter.to_crs(epsg=4326)
 
     # --- 出発点（大学） ---
-    univ_feat = next(univ_layer.getFeatures())
-    start_point = transform_univ.transform(univ_feat.geometry().asPoint())
+    start_geom = gdf_univ.geometry.iloc[0]
+    start_point = (start_geom.x, start_geom.y)
 
     # --- 最も近い避難所を探索 ---
-    distance_calc = QgsDistanceArea()
-    distance_calc.setEllipsoid('WGS84')
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    x0, y0 = transformer.transform(*start_point)
 
     min_dist = float("inf")
     goal_point = None
     goal_attr = None
 
-    for f in shelter_layer.getFeatures():
-        # 避難所の位置取得と変換
-        p = transform_shelter.transform(f.geometry().asPoint())
-        dist = distance_calc.measureLine(QgsPointXY(start_point), QgsPointXY(p))
+    for _, row in gdf_shelter.iterrows():
+        x, y = transformer.transform(row.geometry.x, row.geometry.y)
+        dist = ((x - x0)**2 + (y - y0)**2)**0.5  # 平面距離（メートル換算）
         if dist < min_dist:
             min_dist = dist
-            goal_point = p
-            goal_attr = f.attributes()
+            goal_point = (row.geometry.x, row.geometry.y)
+            goal_attr = row.to_dict()
 
+    # --- 結果 ---
     return {
-        "start_point": start_point,
-        "goal_point": goal_point,
+        "start_point": Point(start_point),
+        "goal_point": Point(goal_point),
         "distance_m": min_dist,
         "shelter_attr": goal_attr
     }
