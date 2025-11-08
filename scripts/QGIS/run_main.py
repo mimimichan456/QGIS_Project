@@ -1,7 +1,6 @@
 # dlite_distance.py
 import sys, os
 sys.path.append("/Users/segawamizuto/QGIS_Project")
-os.environ["PROJ_LIB"] = "/Applications/QGIS.app/Contents/Resources/proj"
 
 import networkx as nx
 from math import hypot
