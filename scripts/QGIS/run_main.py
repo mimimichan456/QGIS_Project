@@ -90,11 +90,13 @@ def run_dlite_algorithm(
     except nx.NetworkXNoPath:
         print("❌ No Path Found.")
         return None
+    
+    route_coords = build_route_coords(route, edge_geom_map)
 
     print(f"📏 距離: {total_dist:.2f} m")
     print(f"🛣️ ノード数: {len(route)}")
 
-        # --- 結果を反映 ---
+    # --- 結果を反映 ---
     return {
         "start": start_point,
         "goal": goal_point,
@@ -103,7 +105,25 @@ def run_dlite_algorithm(
         "graph": G,
         "node_positions": node_positions,
         "edge_geom_map": edge_geom_map,
+        "route_coords": route_coords
     }
+
+def build_route_coords(path, edge_geom_map):
+    """ノード列 path から座標列を構築する"""
+    route_coords = []
+    for i in range(len(path) - 1):
+        u, v = path[i], path[i + 1]
+        geom_line = edge_geom_map.get((u, v))
+        if not geom_line:
+            continue
+        # 接続点が重複しないように1点スキップ
+        if route_coords and (
+            route_coords[-1][0] == geom_line[0][0]
+            and route_coords[-1][1] == geom_line[0][1]
+        ):
+            geom_line = geom_line[1:]
+        route_coords.extend(geom_line)
+    return route_coords
 
 #他のファイルから実行された場合は無視
 if __name__ == "__main__":
@@ -126,25 +146,6 @@ if __name__ == "__main__":
     if not path:
         print("❌ 経路が見つかりません")
         sys.exit()
-
-    # --- 道路形状に沿った座標列を構築 ---
-    route_coords = []
-    for i in range(len(path) - 1):
-        u, v = path[i], path[i + 1]
-        geom_line = result["graph"].edges[u, v].get("geom") if "geom" in result["graph"].edges[u, v] else None
-        if not geom_line:
-            geom_line = edge_geom_map.get((u, v))
-        if not geom_line:
-            continue
-
-        if route_coords and (
-            route_coords[-1][0] == geom_line[0][0] and route_coords[-1][1] == geom_line[0][1]
-        ):
-            geom_line = geom_line[1:]
-        route_coords.extend(geom_line)
-
-    result["route_nodes"] = path
-    result["route_coords"] = route_coords
 
     # 初回経路保存
     save_route_to_shapefile(result)
@@ -182,20 +183,9 @@ if __name__ == "__main__":
             continue
 
         # --- 道路形状を再構築して保存 ---
-        route_coords = []
-        for i in range(len(path) - 1):
-            u, v = path[i], path[i + 1]
-            geom_line = edge_geom_map.get((u, v))
-            if not geom_line:
-                continue
-            if route_coords and (
-                route_coords[-1][0] == geom_line[0][0] and route_coords[-1][1] == geom_line[0][1]
-            ):
-                geom_line = geom_line[1:]
-            route_coords.extend(geom_line)
-
+        route_coords = build_route_coords(path, edge_geom_map)
         result["route_nodes"] = path
-        result["route_coords"] = [(p[0], p[1]) for p in route_coords]
+        result["route_coords"] = route_coords
         result["distance_m"] = sum(G[path[i]][path[i + 1]]["weight"] for i in range(len(path) - 1))
 
         print(f"📏 距離: {result['distance_m']:.2f} m")
