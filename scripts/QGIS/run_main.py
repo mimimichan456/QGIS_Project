@@ -186,13 +186,13 @@ if __name__ == "__main__":
             if not geom_line:
                 continue
             if route_coords and (
-                route_coords[-1].x() == geom_line[0].x() and route_coords[-1].y() == geom_line[0].y()
+                route_coords[-1][0] == geom_line[0][0] and route_coords[-1][1] == geom_line[0][1]
             ):
                 geom_line = geom_line[1:]
             route_coords.extend(geom_line)
 
         result["route_nodes"] = path
-        result["route_coords"] = [(p.x(), p.y()) for p in route_coords]
+        result["route_coords"] = [(p[0], p[1]) for p in route_coords]
         result["distance_m"] = sum(G[path[i]][path[i + 1]]["weight"] for i in range(len(path) - 1))
 
         print(f"📏 距離: {result['distance_m']:.2f} m")
