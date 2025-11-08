@@ -166,7 +166,10 @@ if __name__ == "__main__":
             print("⚠️ その道路は存在しません")
             continue
 
+        # 無向グラフなので双方の重みを無効化
         G[u][v]["weight"] = float("inf")
+        if G.has_edge(v, u):
+            G[v][u]["weight"] = float("inf")
         print(f"🚧 通行止め設定: {u} → {v}")
 
         dlite.update_vertex(u)
