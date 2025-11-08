@@ -32,3 +32,6 @@ venv/
 # Output / cache / data
 data/tmp/
 logs/
+
+# Jupyter checkpoints
+notebooks/.ipynb_checkpoints/
