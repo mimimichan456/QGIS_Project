@@ -8,10 +8,10 @@ from math import hypot
 import geopandas as gpd
 
 from scripts.QGIS.find_shelter import find_nearest_shelter
-from scripts.QGIS.dlite_core import DStarLite
+from scripts.QGIS.dlite_algorithm import DStarLite
 from scripts.QGIS.save_route import save_route_to_shapefile
 
-def run_dlite_distance_only(
+def run_dlite_algorithm(
     loads_path="/Users/segawamizuto/QGIS_Project/data/processed/roads/ube_roads.shp"
 ):
     # --- 出発点とゴール ---
@@ -107,7 +107,7 @@ def run_dlite_distance_only(
 
 #他のファイルから実行された場合は無視
 if __name__ == "__main__":
-    result = run_dlite_distance_only()
+    result = run_dlite_algorithm()
     if not result:
         sys.exit("❌ 経路が見つかりませんでした")
 
