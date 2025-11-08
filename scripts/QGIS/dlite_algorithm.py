@@ -34,10 +34,14 @@ class DStarLite:
     def update_vertex(self, u):
         if u != self.goal:
             #該当隣接ノードの全隣接ノードを元に見込み最短距離を更新
-            self.rhs[u] = min(
-                self.g[s] + self.G[u][s]["weight"]
-                for s in self.G.neighbors(u)
-            )
+            neighbors = list(self.G.neighbors(u))
+            if neighbors:
+                self.rhs[u] = min(
+                    self.g[s] + self.G[u][s]["weight"]
+                    for s in neighbors
+                )
+            else:
+                self.rhs[u] = float("inf")
         # そのノードいままでの優先順位を削除
         for i, (_, node) in enumerate(self.U):
             if node == u:
