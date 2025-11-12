@@ -1,0 +1,18 @@
+# --- FastAPI Core ---
+fastapi
+uvicorn[standard]
+
+# --- Data Processing ---
+pydantic
+networkx
+python-dotenv
+
+# --- Geospatial stack ---
+geopandas
+shapely
+fiona
+pyproj
+pandas
+
+# --- Database ---
+psycopg2-binary

@@ -1,8 +1,11 @@
+import os
 import geopandas as gpd
 from typing import Dict, Optional
 from shapely.geometry import LineString, MultiLineString, Point
 
-DEFAULT_ROAD_PATH = "/Users/segawamizuto/QGIS_Project/data/processed/roads/ube_roads.shp"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))         
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../")) 
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")                   
 
 def _ensure_point(point) -> Point:
     if isinstance(point, Point):
@@ -26,18 +29,20 @@ def _line_for_distance(geom, target_point: Point):
         return geom
     return None
 
-def find_nearest_road_edge(point, loads_path: str = DEFAULT_ROAD_PATH) -> Dict:
+def find_nearest_road_edge(
+    point,
+    loads_path: str = os.path.join(DATA_DIR, "processed/roads/ube_roads.shp")
+) -> Dict:
     """
-    任意の点から最も近い道路エッジ(u, v)を探索し、属性付きで返却。
-    戻り値例:
-        {
-            "edge": (u, v),
-            "distance": float,
-            "geometry": [[x, y], ...],
-            "properties": {...}
-        }
+    指定した点（lon, lat）に最も近い道路エッジを検索する関数。
+    絶対パス不要でRender環境でも動作可能。
     """
     target_point = _ensure_point(point)
+
+    # --- データ読込 ---
+    if not os.path.exists(loads_path):
+        raise FileNotFoundError(f"道路データが見つかりません: {loads_path}")
+
     roads = gpd.read_file(loads_path)
 
     best: Optional[Dict] = None

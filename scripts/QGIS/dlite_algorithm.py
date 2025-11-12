@@ -11,6 +11,8 @@ class DStarLite:
         self.rhs = {n: float("inf") for n in self.G.nodes} #見込み距離コスト:初期値無限大
         self.U = [] # 優先順位付き道路キュー
         self.km = 0 # 通行止めが発生した際の調整値
+        self.heuristic_type = heuristic
+        self.removed = set()
 
         if initial_state:
             self._load_state(initial_state)
@@ -23,6 +25,9 @@ class DStarLite:
     def heuristic(self, n1, n2):
         x1, y1 = self.node_positions[n1]
         x2, y2 = self.node_positions[n2]
+
+        if self.heuristic_type == "manhattan":
+            return abs(x1 - x2) + abs(y1 - y2)
         return hypot(x1 - x2, y1 - y2)
 
     #該当ノードの優先順位を計算
@@ -36,7 +41,6 @@ class DStarLite:
     #隣接ノードのゴールからの見込み最短距離を再計算しキューに追加
     def update_vertex(self, u):
         if u != self.goal:
-            #該当隣接ノードの全隣接ノードを元に見込み最短距離を更新
             neighbors = list(self.G.neighbors(u))
             if neighbors:
                 self.rhs[u] = min(
@@ -45,37 +49,37 @@ class DStarLite:
                 )
             else:
                 self.rhs[u] = float("inf")
-        # そのノードいままでの優先順位を削除
-        for i, (_, node) in enumerate(self.U):
-            if node == u:
-                del self.U[i]
-                heapq.heapify(self.U)
-                break
-        # 新しい優先順位を追加
+
+        # ❌ 以前のようにキューから削除しない
+        #   → 代わりに「削除予約リスト」に登録
+        self.removed.add(u)
+
+        # g ≠ rhs の場合、新しいkeyで再プッシュ
         if self.g[u] != self.rhs[u]:
             heapq.heappush(self.U, (self.calculate_key(u), u))
 
-    # 最短経路を計算
+    # 🚀 lazy deletion対応 compute_shortest_path
     def compute_shortest_path(self):
-        #探索が終わるまで繰り返す
         while self.U and (
             self.U[0][0] < self.calculate_key(self.start)
             or self.rhs[self.start] != self.g[self.start]
         ):
-            # 一番優先順位の高いノードをキューから取得
-            _, u = heapq.heappop(self.U)
-            # ゴールから該当ノードまでの確定最短距離を更新
+            key, u = heapq.heappop(self.U)
+
+            # 🧹 削除対象ならスキップ
+            if u in self.removed:
+                self.removed.remove(u)
+                continue
+
             if self.g[u] > self.rhs[u]:
                 self.g[u] = self.rhs[u]
-                #該当ノードからの全隣接ノードの優先順位を更新
                 for pred in self.G.neighbors(u):
                     self.update_vertex(pred)
-            # 確定距離コストを無限大に設定
             else:
                 self.g[u] = float("inf")
                 for pred in list(self.G.neighbors(u)) + [u]:
                     self.update_vertex(pred)
-
+                    
     # スタートからの経路に変換
     def extract_path(self):
         if self.g[self.start] == float("inf"):
@@ -83,10 +87,12 @@ class DStarLite:
         path = [self.start]
         current = self.start
         while current != self.goal:
-            next_node = min(
-                self.G.neighbors(current),
-                key=lambda n: self.G[current][n]["weight"] + self.g[n]
-            )
+            neighbors = list(self.G.neighbors(current))
+            if not neighbors:
+                break
+            next_node = min(neighbors, key=lambda n: self.G[current][n]["weight"] + self.g.get(n, float("inf")))
+            if not isfinite(self.g.get(next_node, float("inf"))):
+                break  # 経路が途切れた場合に停止
             path.append(next_node)
             current = next_node
         return path
