@@ -28,6 +28,7 @@ __pycache__/
 # Virtual environments
 .venv/
 .env/
+*.env
 
 # Output / cache / data
 data/tmp/
