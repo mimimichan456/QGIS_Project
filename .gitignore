@@ -14,25 +14,18 @@
 *.xml
 *.cpg
 *.db
+*.qgz
 
-# キャッシュ類は除外
-cache/
 __pycache__/
-*.pyc
-
-# OS / Editor files
 .DS_Store
 .vscode/
-.idea/
-
-# Virtual environments
 .venv/
-.env/
 *.env
 
-# Output / cache / data
-data/tmp/
-logs/
+data/raw
+data/route
 
-# Jupyter checkpoints
-notebooks/.ipynb_checkpoints/
+scripts/GET_DATA
+scripts/QGIS/save_route.py
+
+notebooks
