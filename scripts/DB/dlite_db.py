@@ -4,15 +4,20 @@ import psycopg2
 from psycopg2.extras import Json
 from dotenv import load_dotenv
 from typing import Any, Dict, List, Optional
+from psycopg2 import pool
+
+_connection_pool = None
 
 load_dotenv()
 
 
 def _get_connection():
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL が設定されていません。")
-    return psycopg2.connect(database_url, sslmode="require")
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = pool.SimpleConnectionPool(
+            1, 10, os.getenv("DATABASE_URL"), sslmode="require"
+        )
+    return _connection_pool.getconn()
 
 
 def save_session_state(
@@ -41,20 +46,29 @@ def save_session_state(
                       blocked_edges = EXCLUDED.blocked_edges,
                       updated_at = CURRENT_TIMESTAMP;
     """
-    with _get_connection() as conn:
+    _execute_query(
+        query,
+        (
+            session_id,
+            Json(g),
+            Json(rhs),
+            Json(queue),
+            int(start_id),
+            int(goal_id),
+            Json(blocked_payload),
+        ),
+    )
+            
+def _execute_query(query, params=(), fetch=False):
+    conn = _get_connection()
+    try:
         with conn.cursor() as cur:
-            cur.execute(
-                query,
-                (
-                    session_id,
-                    Json(g),    # D* Lite 側で有限値のみに間引いてから渡している
-                    Json(rhs),  # → DB に書き込むペイロードを最小限に抑える
-                    Json(queue),
-                    int(start_id),
-                    int(goal_id),
-                    Json(blocked_payload),
-                ),
-            )
+            cur.execute(query, params)
+            if fetch:
+                return cur.fetchone()
+            conn.commit()
+    finally:
+        _connection_pool.putconn(conn)
 
 
 def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
@@ -63,10 +77,7 @@ def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
         FROM dlite_session
         WHERE session_id = %s;
     """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (session_id,))
-            row = cur.fetchone()
+    row = _execute_query(query, (session_id,), fetch=True)
 
     if not row:
         return None

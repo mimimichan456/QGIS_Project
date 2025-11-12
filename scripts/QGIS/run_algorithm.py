@@ -1,10 +1,11 @@
 import sys
 import os
+import numpy as np
 import networkx as nx
 import geopandas as gpd
 from shapely.geometry import Point
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))          
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 sys.path.append(PROJECT_ROOT)
 
@@ -16,6 +17,7 @@ from scripts.QGIS.save_route import save_route_to_shapefile
 
 
 def _ensure_point(point):
+    """さまざまな形式を shapely.geometry.Point に統一"""
     if isinstance(point, Point):
         return point
     if isinstance(point, (tuple, list)) and len(point) == 2:
@@ -26,6 +28,7 @@ def _ensure_point(point):
 
 
 def _normalize_edges(edges):
+    """(u,v)ペアの重複を排除して整形"""
     normalized = []
     seen = set()
     for edge in edges or []:
@@ -41,6 +44,15 @@ def _normalize_edges(edges):
         seen.add(pair)
         normalized.append(pair)
     return normalized
+
+
+def _nearest_node(point, node_positions):
+    """NumPyで最寄りノードを高速探索"""
+    px, py = point.x, point.y
+    ids = np.array(list(node_positions.keys()))
+    coords = np.array(list(node_positions.values()))
+    dists = np.sum((coords - np.array([px, py]))**2, axis=1)
+    return int(ids[np.argmin(dists)])
 
 
 def run_dlite_algorithm(
@@ -65,90 +77,69 @@ def run_dlite_algorithm(
     blocked_edges = _normalize_edges(blocked_edges)
     new_blocked_edges = _normalize_edges(new_blocked_edges)
 
-    # --- 道路レイヤ ---
-    roads = gpd.read_file(loads_path)
+    # --- 道路レイヤ読込（必要列のみ） ---
+    roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
 
     # --- グラフ構築 ---
     G = nx.Graph()
     node_positions = {}
-    edge_geom_map = {}
 
     for _, f in roads.iterrows():
         u, v = f["u"], f["v"]
-        if u is None or v is None:
+        if u is None or v is None or f.geometry is None:
             continue
 
         geom = f.geometry
-
         if geom.geom_type == "MultiLineString":
             lines = list(geom.geoms)
             if not lines:
                 continue
-            line = lines[0].coords[:]
+            line = list(lines[0].coords)
         else:
             line = list(geom.coords)
 
-        if not line or len(line) < 2:
+        if len(line) < 2:
             continue
 
         length = float(f["length"]) if "length" in f and f["length"] else geom.length
-
-        if u not in node_positions:
-            node_positions[u] = line[0]
-        if v not in node_positions:
-            node_positions[v] = line[-1]
-
-        edge_geom_map[(u, v)] = line
-        edge_geom_map[(v, u)] = list(reversed(line))
-
-        G.add_edge(u, v, weight=length)
-        G.add_edge(v, u, weight=length)
+        node_positions[u] = node_positions.get(u, line[0])
+        node_positions[v] = node_positions.get(v, line[-1])
+        G.add_edge(u, v, weight=length, geometry=line)
 
     if not node_positions:
         raise ValueError("道路レイヤに有効なノードがありません。")
 
     # --- 出発点・到着点を最寄りノードへスナップ ---
-    def nearest_node(point):
-        px, py = point.x, point.y
-        best, best_id = float("inf"), None
-        for node_id, (x, y) in node_positions.items():
-            d = (px - x)**2 + (py - y)**2
-            if d < best:
-                best, best_id = d, node_id
-        return best_id
-
     if start_node_id is not None:
         start_id = int(start_node_id)
         if start_id not in node_positions:
-            raise ValueError("指定した start_id が道路ネットワークに存在しません。")
+            raise ValueError("指定した start_id が存在しません。")
         if start_point is None:
             sx, sy = node_positions[start_id]
             start_point = Point(sx, sy)
     else:
-        start_id = nearest_node(start_point)
+        start_id = _nearest_node(start_point, node_positions)
 
     if goal_node_id is not None:
         goal_id = int(goal_node_id)
         if goal_id not in node_positions:
-            raise ValueError("指定した goal_id が道路ネットワークに存在しません。")
+            raise ValueError("指定した goal_id が存在しません。")
         if goal_point is None:
             gx, gy = node_positions[goal_id]
             goal_point = Point(gx, gy)
     else:
-        goal_id = nearest_node(goal_point)
+        goal_id = _nearest_node(goal_point, node_positions)
 
     if start_id is None or goal_id is None:
-        raise ValueError("出発点 / 到着点を道路ネットワークにスナップできませんでした。")
+        raise ValueError("出発点 / 到着点をスナップできませんでした。")
 
     # --- 通行止め適用 ---
     if blocked_edges:
         for u, v in blocked_edges:
             if G.has_edge(u, v):
                 G[u][v]["weight"] = float("inf")
-            if G.has_edge(v, u):
-                G[v][u]["weight"] = float("inf")
 
-    # --- D* Lite 探索 ---
+    # --- D* Lite 実行 ---
     try:
         dlite = DStarLite(G, start_id, goal_id, node_positions, initial_state=initial_state)
         if new_blocked_edges:
@@ -156,13 +147,17 @@ def run_dlite_algorithm(
                 dlite.update_vertex(u)
                 dlite.update_vertex(v)
         dlite.compute_shortest_path()
-        route = dlite.extract_path()
-        total_dist = nx.shortest_path_length(G, source=start_id, target=goal_id, weight="weight")
+        route = dlite.extract_path() or []
+        if not route:
+            raise ValueError("経路が見つかりません。")
+
+        total_dist = sum(G[route[i]][route[i + 1]]["weight"] for i in range(len(route) - 1))
     except nx.NetworkXNoPath:
         print("❌ No Path Found.")
         return None
 
-    route_coords = build_route_coords(route, edge_geom_map)
+    # --- 座標列を構築 ---
+    route_coords = build_route_coords(route, G)
 
     print(f"📏 距離: {total_dist:.2f} m")
     print(f"🛣️ ノード数: {len(route)}")
@@ -172,9 +167,6 @@ def run_dlite_algorithm(
         "goal": goal_point,
         "distance_m": total_dist,
         "route_nodes": route,
-        "graph": G,
-        "node_positions": node_positions,
-        "edge_geom_map": edge_geom_map,
         "route_coords": route_coords,
         "start_id": start_id,
         "goal_id": goal_id,
@@ -183,18 +175,15 @@ def run_dlite_algorithm(
     }
 
 
-def build_route_coords(path, edge_geom_map):
-    """ノード列 path から座標列を構築する"""
+def build_route_coords(path, graph):
+    """ノード列から座標列を構築"""
     route_coords = []
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
-        geom_line = edge_geom_map.get((u, v))
+        geom_line = graph[u][v].get("geometry")
         if not geom_line:
             continue
-        if route_coords and (
-            route_coords[-1][0] == geom_line[0][0]
-            and route_coords[-1][1] == geom_line[0][1]
-        ):
+        if route_coords and (route_coords[-1] == geom_line[0]):
             geom_line = geom_line[1:]
         route_coords.extend(geom_line)
     return route_coords
