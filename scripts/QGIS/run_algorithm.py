@@ -13,7 +13,7 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
-from scripts.QGIS.save_route import save_route_to_shapefile
+# from scripts.QGIS.save_route import save_route_to_shapefile
 
 
 def _ensure_point(point):
@@ -194,4 +194,4 @@ if __name__ == "__main__":
     if not result:
         sys.exit("❌ 経路が見つかりませんでした")
 
-    save_route_to_shapefile(result)
+    # save_route_to_shapefile(result)
