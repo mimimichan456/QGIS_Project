@@ -22,7 +22,6 @@ __pycache__/
 .venv/
 *.env
 
-data/raw
 data/route
 
 scripts/GET_DATA

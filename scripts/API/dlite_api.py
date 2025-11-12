@@ -91,7 +91,7 @@ def _blocked_edges_to_models(edges):
 
 
 def _persist_session(session_id: str, result, start_coord: Coordinate, goal_coord: Coordinate):
-    state = result["dlite_state"]  # D* Lite 側でシリアライズ時に軽量化済み
+    state = result["dlite_state"]
     try:
         save_session_state(
             session_id,
