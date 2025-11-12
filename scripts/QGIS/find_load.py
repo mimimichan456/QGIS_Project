@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import geopandas as gpd
 from typing import Dict, Optional
 from shapely.geometry import LineString, MultiLineString, Point
@@ -61,8 +62,11 @@ def find_nearest_road_edge(
         geom = _line_for_distance(row.geometry, target_point)
         if geom is None:
             continue
+        try:
+            dist = geom.distance(target_point)
+        except Exception:
+            continue
 
-        dist = geom.distance(target_point)
         if dist < best_dist:
             best_dist = dist
             best_row = row
@@ -75,7 +79,10 @@ def find_nearest_road_edge(
     if u is None or v is None:
         raise ValueError("ノードID (u, v) が欠落しています。")
 
-    properties = best_row.drop(labels=["geometry"]).to_dict()
+    properties = {
+        k: (float(v) if isinstance(v, (np.floating,)) else v)
+        for k, v in best_row.drop(labels=["geometry"]).to_dict().items()
+    }
 
     return {
         "edge": (int(u), int(v)),

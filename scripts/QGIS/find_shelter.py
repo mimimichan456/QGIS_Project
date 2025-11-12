@@ -14,8 +14,9 @@ def _normalize_point(point) -> Point:
         return point
     if isinstance(point, (tuple, list)) and len(point) == 2:
         return Point(float(point[0]), float(point[1]))
-    raise TypeError("start_point は (lon, lat) のタプル/リスト、または shapely.geometry.Point を指定してください。")
-
+    if isinstance(point, dict) and {"lon", "lat"} <= set(point):
+        return Point(float(point["lon"]), float(point["lat"]))
+    raise TypeError("start_point は (lon, lat) または {'lon':, 'lat':} 形式で指定してください。")
 
 def find_nearest_shelter(
     start_point=None,
@@ -68,7 +69,11 @@ def find_nearest_shelter(
     idx = int(np.argmin(dists))
     nearest_row = gdf_shelter.iloc[idx]
     goal_geom = nearest_row.geometry
-    goal_attr = nearest_row.drop(labels=["geometry"]).to_dict()
+
+    goal_attr = {
+        k: (v.item() if isinstance(v, (np.generic,)) else v)
+        for k, v in nearest_row.drop(labels=["geometry"]).to_dict().items()
+    }
 
     # --- 結果構築 ---
     return {

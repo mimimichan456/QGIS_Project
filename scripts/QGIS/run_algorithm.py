@@ -7,8 +7,6 @@ from shapely.geometry import Point
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
-sys.path.append(PROJECT_ROOT)
-
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
 from scripts.QGIS.find_shelter import find_nearest_shelter
@@ -30,7 +28,6 @@ def _ensure_point(point):
 def _normalize_edges(edges):
     """(u,v)ペアの重複を排除して整形"""
     normalized = []
-    seen = set()
     for edge in edges or []:
         if isinstance(edge, dict):
             u, v = edge.get("u"), edge.get("v")
@@ -39,19 +36,16 @@ def _normalize_edges(edges):
         if u is None or v is None:
             continue
         pair = (int(u), int(v))
-        if pair in seen:
-            continue
-        seen.add(pair)
-        normalized.append(pair)
+        if pair not in normalized:
+            normalized.append(pair)
     return normalized
 
 
 def _nearest_node(point, node_positions):
-    """NumPyで最寄りノードを高速探索"""
     px, py = point.x, point.y
     ids = np.array(list(node_positions.keys()))
     coords = np.array(list(node_positions.values()))
-    dists = np.sum((coords - np.array([px, py]))**2, axis=1)
+    dists = np.linalg.norm(coords - np.array([px, py]), axis=1)
     return int(ids[np.argmin(dists)])
 
 
@@ -77,34 +71,39 @@ def run_dlite_algorithm(
     blocked_edges = _normalize_edges(blocked_edges)
     new_blocked_edges = _normalize_edges(new_blocked_edges)
 
-    # --- 道路レイヤ読込（必要列のみ） ---
-    roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
+    # --- 道路レイヤ読込 ---
+    try:
+        try:
+            roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
+        except Exception:
+            roads = gpd.read_file(loads_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"道路データが存在しません: {loads_path}")
+    except Exception as e:
+        raise RuntimeError(f"道路データの読込に失敗しました: {e}")
 
     # --- グラフ構築 ---
     G = nx.Graph()
     node_positions = {}
 
     for _, f in roads.iterrows():
-        u, v = f["u"], f["v"]
-        if u is None or v is None or f.geometry is None:
+        if f.geometry is None:
             continue
-
+        u, v = f.get("u"), f.get("v")
+        if u is None or v is None:
+            continue
         geom = f.geometry
         if geom.geom_type == "MultiLineString":
-            lines = list(geom.geoms)
-            if not lines:
+            if not geom.geoms:
                 continue
-            line = list(lines[0].coords)
+            coords = list(geom.geoms[0].coords)
         else:
-            line = list(geom.coords)
-
-        if len(line) < 2:
+            coords = list(geom.coords)
+        if len(coords) < 2:
             continue
-
-        length = float(f["length"]) if "length" in f and f["length"] else geom.length
-        node_positions[u] = node_positions.get(u, line[0])
-        node_positions[v] = node_positions.get(v, line[-1])
-        G.add_edge(u, v, weight=length, geometry=line)
+        node_positions[u] = node_positions.get(u, coords[0])
+        node_positions[v] = node_positions.get(v, coords[-1])
+        G.add_edge(u, v, weight=f.get("length", geom.length), geometry=coords)
 
     if not node_positions:
         raise ValueError("道路レイヤに有効なノードがありません。")
@@ -151,10 +150,16 @@ def run_dlite_algorithm(
         if not route:
             raise ValueError("経路が見つかりません。")
 
-        total_dist = sum(G[route[i]][route[i + 1]]["weight"] for i in range(len(route) - 1))
+        total_dist = sum(
+            float(G[route[i]][route[i + 1]]["weight"])
+            for i in range(len(route) - 1)
+            if np.isfinite(G[route[i]][route[i + 1]]["weight"])
+        )
     except nx.NetworkXNoPath:
         print("❌ No Path Found.")
         return None
+    except Exception as e:
+        raise RuntimeError(f"D* Lite 実行中にエラー発生: {e}")
 
     # --- 座標列を構築 ---
     route_coords = build_route_coords(route, G)
@@ -165,12 +170,12 @@ def run_dlite_algorithm(
     return {
         "start": start_point,
         "goal": goal_point,
-        "distance_m": total_dist,
+        "distance_m": float(total_dist),
         "route_nodes": route,
         "route_coords": route_coords,
-        "start_id": start_id,
-        "goal_id": goal_id,
-        "blocked_edges": [{"u": u, "v": v} for u, v in blocked_edges],
+        "start_id": int(start_id),
+        "goal_id": int(goal_id),
+        "blocked_edges": [{"u": int(u), "v": int(v)} for u, v in (blocked_edges or [])],
         "dlite_state": dlite.export_state(),
     }
 
@@ -190,8 +195,11 @@ def build_route_coords(path, graph):
 
 
 if __name__ == "__main__":
-    result = run_dlite_algorithm()
-    if not result:
-        sys.exit("❌ 経路が見つかりませんでした")
+    try:
+        result = run_dlite_algorithm()
+        if not result:
+            sys.exit("❌ 経路が見つかりませんでした")
+    except Exception as e:
+        sys.exit(f"❌ エラー発生: {e}")
 
     # save_route_to_shapefile(result)

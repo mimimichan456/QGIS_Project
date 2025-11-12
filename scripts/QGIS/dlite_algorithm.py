@@ -30,10 +30,9 @@ class DStarLite:
 
 
     def _calculate_key(self, node):
-        g_val = self.g[node]
-        rhs_val = self.rhs[node]
-        min_val = min(g_val, rhs_val)
-        return (min_val + self._heuristic(self.start, node) + self.km, min_val)
+        val = min(self.g[node], self.rhs[node])
+        return (val + self._heuristic(self.start, node) + self.km, val)
+
     
     # --- 頂点更新 ---
     def update_vertex(self, u):
@@ -44,21 +43,19 @@ class DStarLite:
             else:
                 self.rhs[u] = float("inf")
 
-        # キュー再登録（重複OK：小規模用途では問題なし）
-        for i, (_, node) in enumerate(self.U):
-            if node == u:
-                del self.U[i]
-                heapq.heapify(self.U)
-                break
+        self.U = [(k, n) for k, n in self.U if n != u]
+        heapq.heapify(self.U)
+        
         if self.g[u] != self.rhs[u]:
             heapq.heappush(self.U, (self._calculate_key(u), u))
 
     # --- 最短経路探索 ---
     def compute_shortest_path(self):
-        while self.U and (
-            self.U[0][0] < self._calculate_key(self.start)
-            or self.rhs[self.start] != self.g[self.start]
-        ):
+        while self.U:
+            top_key, top_node = self.U[0]
+            if not (top_key < self._calculate_key(self.start) or self.rhs[self.start] != self.g[self.start]):
+                break
+
             _, u = heapq.heappop(self.U)
 
             if self.g[u] > self.rhs[u]:
@@ -69,7 +66,7 @@ class DStarLite:
                 self.g[u] = float("inf")
                 for pred in list(self.G.neighbors(u)) + [u]:
                     self.update_vertex(pred)
-
+                    
     # --- 経路抽出 ---
     def extract_path(self):
         if not isfinite(self.g[self.start]):
@@ -101,8 +98,10 @@ class DStarLite:
 
     def update_edge_cost(self, u, v, new_weight):
         """エッジ重み変更（通行止め/解除）"""
-        if not self.G.has_node(u) or not self.G.has_node(v):
-            return  # 安全ガード
+        if not (self.G.has_node(u) and self.G.has_node(v)):
+            return
+        if not (self.G.has_edge(u, v) or self.G.has_edge(v, u)):
+            return
 
         if self.G.has_edge(u, v):
             self.G[u][v]["weight"] = float(new_weight)
@@ -114,9 +113,12 @@ class DStarLite:
     # --- 状態保存 / 復元 ---
     def export_state(self):
         return {
-            "g": {int(n): v for n, v in self.g.items() if isfinite(v)},
-            "rhs": {int(n): v for n, v in self.rhs.items() if isfinite(v)},
-            "U": [[int(node), float(k[0]), float(k[1])] for k, node in self.U if node is not None],
+            "g": {int(n): float(v) for n, v in self.g.items() if isfinite(v)},
+            "rhs": {int(n): float(v) for n, v in self.rhs.items() if isfinite(v)},
+            "U": [
+                [int(node), float(k[0]), float(k[1])]
+                for k, node in self.U if node is not None
+            ],
             "km": float(self.km),
             "start": int(self.start),
             "goal": int(self.goal),
@@ -124,10 +126,8 @@ class DStarLite:
         }
 
     def _load_state(self, state):
-        for node, val in state.get("g", {}).items():
-            self.g[int(node)] = float(val)
-        for node, val in state.get("rhs", {}).items():
-            self.rhs[int(node)] = float(val)
+        self.g.update({int(n): float(v) for n, v in state.get("g", {}).items()})
+        self.rhs.update({int(n): float(v) for n, v in state.get("rhs", {}).items()})
         self.U = []
         for item in state.get("U", []):
             if isinstance(item, (list, tuple)) and len(item) == 3:
