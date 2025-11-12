@@ -3,20 +3,37 @@ import sys, os
 sys.path.append("/Users/segawamizuto/QGIS_Project")
 
 import networkx as nx
-from math import hypot
 import geopandas as gpd
+from shapely.geometry import Point
 
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
 from scripts.QGIS.save_route import save_route_to_shapefile
 
+
+def _ensure_point(point):
+    if isinstance(point, Point):
+        return point
+    if isinstance(point, (tuple, list)) and len(point) == 2:
+        return Point(float(point[0]), float(point[1]))
+    if isinstance(point, dict) and {"lon", "lat"} <= set(point):
+        return Point(float(point["lon"]), float(point["lat"]))
+    raise TypeError("Point must be shapely Point or (lon, lat).")
+
+
 def run_dlite_algorithm(
-    loads_path="/Users/segawamizuto/QGIS_Project/data/processed/roads/ube_roads.shp"
+    loads_path="/Users/segawamizuto/QGIS_Project/data/processed/roads/ube_roads.shp",
+    start_point=None,
+    goal_point=None,
 ):
     # --- 出発点とゴール ---
-    res = find_nearest_shelter()
-    start_point = res["start_point"]
-    goal_point  = res["goal_point"]
+    if start_point is None or goal_point is None:
+        res = find_nearest_shelter()
+        start_point = res["start_point"]
+        goal_point = res["goal_point"]
+    else:
+        start_point = _ensure_point(start_point)
+        goal_point = _ensure_point(goal_point)
 
     # --- 道路レイヤ ---
     roads = gpd.read_file(loads_path)
@@ -64,6 +81,9 @@ def run_dlite_algorithm(
         G.add_edge(u, v, weight=length)
         G.add_edge(v, u, weight=length)
 
+    if not node_positions:
+        raise ValueError("道路レイヤに有効なノードがありません。")
+
     # --- 出発点・到着点を最寄りノードへスナップ ---
     def nearest_node(point):
         px, py = point.x, point.y
@@ -77,6 +97,9 @@ def run_dlite_algorithm(
 
     start_id = nearest_node(start_point)
     goal_id  = nearest_node(goal_point)
+
+    if start_id is None or goal_id is None:
+        raise ValueError("出発点 / 到着点を道路ネットワークにスナップできませんでした。")
 
     # --- 最短経路探索 ---
     try:

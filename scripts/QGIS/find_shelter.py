@@ -3,7 +3,20 @@ import geopandas as gpd
 from shapely.geometry import Point
 from pyproj import Transformer
 
+
+def _normalize_point(point):
+    if isinstance(point, Point):
+        return point.x, point.y
+    if (
+        isinstance(point, (tuple, list))
+        and len(point) == 2
+    ):
+        return float(point[0]), float(point[1])
+    raise TypeError("start_point は (lon, lat) のタプル/リスト、または shapely.geometry.Point を指定してください。")
+
+
 def find_nearest_shelter(
+    start_point=None,
     univ_path="/Users/segawamizuto/QGIS_Project/data/raw/university/ube_university.shp",
     shelter_path="/Users/segawamizuto/QGIS_Project/data/processed/shelters/ube_shelters.shp"
 ):
@@ -11,13 +24,21 @@ def find_nearest_shelter(
     gdf_univ = gpd.read_file(univ_path)
     gdf_shelter = gpd.read_file(shelter_path)
 
+    if gdf_univ.empty:
+        raise ValueError("大学シェープファイルに地物がありません。")
+    if gdf_shelter.empty:
+        raise ValueError("避難所シェープファイルに地物がありません。")
+
     # --- 座標系統一（EPSG:4326に変換） ---
     gdf_univ = gdf_univ.to_crs(epsg=4326)
     gdf_shelter = gdf_shelter.to_crs(epsg=4326)
 
-    # --- 出発点（大学） ---
-    start_geom = gdf_univ.geometry.iloc[0]
-    start_point = (start_geom.x, start_geom.y)
+    # --- 出発点 ---
+    if start_point is None:
+        start_geom = gdf_univ.geometry.iloc[0]
+        start_point = (start_geom.x, start_geom.y)
+    else:
+        start_point = _normalize_point(start_point)
 
     # --- 最も近い避難所を探索 ---
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
@@ -36,9 +57,11 @@ def find_nearest_shelter(
             goal_attr = row.to_dict()
 
     # --- 結果 ---
+    if "geometry" in goal_attr:
+        goal_attr.pop("geometry")
+
     return {
-        "start_point": Point(start_point),
-        "goal_point": Point(goal_point),
-        "distance_m": min_dist,
+        "start_point": {"lon": start_point[0], "lat": start_point[1]},
+        "goal_point": {"lon": goal_point[0], "lat": goal_point[1]},
         "shelter_attr": goal_attr
     }
