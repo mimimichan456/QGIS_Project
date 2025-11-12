@@ -58,6 +58,8 @@ app = FastAPI(
     title="D* Lite Routing API",
     description="Find the closest shelter, compute a route, and manage D* Lite sessions.",
     version="0.2.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 
