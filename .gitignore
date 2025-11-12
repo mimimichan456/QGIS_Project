@@ -14,14 +14,7 @@ __pycache__/
 .venv/
 *.env
 
-
-
-data/route
-data/raw/city
-data/raw/shelters
-data/raw/terrains
-data/raw/ube_roads.geojson
-data/raw/ube_buildings.geojson
+data
 
 scripts/GET_DATA
 scripts/QGIS/save_route.py
