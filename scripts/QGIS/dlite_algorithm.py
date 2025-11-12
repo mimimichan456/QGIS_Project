@@ -1,8 +1,8 @@
 import heapq
-from math import hypot
+from math import hypot, isfinite
 
 class DStarLite:
-    def __init__(self, graph, start, goal, node_positions, heuristic="euclidean"):
+    def __init__(self, graph, start, goal, node_positions, heuristic="euclidean", initial_state=None):
         self.G = graph
         self.start = start
         self.goal = goal
@@ -12,9 +12,12 @@ class DStarLite:
         self.U = [] # 優先順位付き道路キュー
         self.km = 0 # 通行止めが発生した際の調整値
 
-        # 初期化
-        self.rhs[self.goal] = 0
-        heapq.heappush(self.U, (self.calculate_key(self.goal), self.goal))
+        if initial_state:
+            self._load_state(initial_state)
+        else:
+            # 初期化
+            self.rhs[self.goal] = 0
+            heapq.heappush(self.U, (self.calculate_key(self.goal), self.goal))
 
     #ヒューリスティック値(ゴールまでの推定距離)を計算。
     def heuristic(self, n1, n2):
@@ -87,3 +90,54 @@ class DStarLite:
             path.append(next_node)
             current = next_node
         return path
+
+    def export_state(self):
+        return {
+            # DB保存サイズを抑えるため有限値のみ保持
+            "g": self._serialize_costs(self.g),
+            "rhs": self._serialize_costs(self.rhs),
+            "U": self._serialize_queue(),
+            "km": self.km,
+        }
+
+    def _load_state(self, state):
+        self.g.update(self._deserialize_costs(state.get("g", {})))
+        self.rhs.update(self._deserialize_costs(state.get("rhs", {})))
+        self.U = self._deserialize_queue(state.get("U", []))
+        self.km = state.get("km", 0)
+
+    @staticmethod
+    def _serialize_costs(costs):
+        return {
+            int(node): value
+            for node, value in costs.items()
+            if isfinite(value)
+        }
+
+    @staticmethod
+    def _deserialize_costs(costs):
+        return {
+            int(node): (value if value is not None else float("inf"))
+            for node, value in costs.items()
+        }
+
+    def _serialize_queue(self):
+        data = []
+        for key, node in self.U:
+            if node is None:
+                continue
+            # [node, k1, k2] 形式で key 名を省いてサイズ削減
+            data.append([int(node), float(key[0]), float(key[1])])
+        return data
+
+    def _deserialize_queue(self, data):
+        queue = []
+        for item in data:
+            if not isinstance(item, (list, tuple)) or len(item) != 3:
+                continue
+            node = int(item[0])
+            key = (float(item[1]), float(item[2]))
+            queue.append((key, node))
+        if queue:
+            heapq.heapify(queue)
+        return queue

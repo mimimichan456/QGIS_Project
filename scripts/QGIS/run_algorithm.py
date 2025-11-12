@@ -21,10 +21,33 @@ def _ensure_point(point):
     raise TypeError("Point must be shapely Point or (lon, lat).")
 
 
+def _normalize_edges(edges):
+    normalized = []
+    seen = set()
+    for edge in edges or []:
+        if isinstance(edge, dict):
+            u, v = edge.get("u"), edge.get("v")
+        else:
+            u, v = edge
+        if u is None or v is None:
+            continue
+        pair = (int(u), int(v))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        normalized.append(pair)
+    return normalized
+
+
 def run_dlite_algorithm(
     loads_path="/Users/segawamizuto/QGIS_Project/data/processed/roads/ube_roads.shp",
     start_point=None,
     goal_point=None,
+    start_node_id=None,
+    goal_node_id=None,
+    initial_state=None,
+    blocked_edges=None,
+    new_blocked_edges=None,
 ):
     # --- 出発点とゴール ---
     if start_point is None or goal_point is None:
@@ -34,6 +57,9 @@ def run_dlite_algorithm(
     else:
         start_point = _ensure_point(start_point)
         goal_point = _ensure_point(goal_point)
+
+    blocked_edges = _normalize_edges(blocked_edges)
+    new_blocked_edges = _normalize_edges(new_blocked_edges)
 
     # --- 道路レイヤ ---
     roads = gpd.read_file(loads_path)
@@ -95,15 +121,50 @@ def run_dlite_algorithm(
                 best, best_id = d, node_id
         return best_id
 
-    start_id = nearest_node(start_point)
-    goal_id  = nearest_node(goal_point)
+    if start_node_id is not None:
+        start_id = int(start_node_id)
+        if start_id not in node_positions:
+            raise ValueError("指定した start_id が道路ネットワークに存在しません。")
+        if start_point is None:
+            sx, sy = node_positions[start_id]
+            start_point = Point(sx, sy)
+    else:
+        start_id = nearest_node(start_point)
+
+    if goal_node_id is not None:
+        goal_id = int(goal_node_id)
+        if goal_id not in node_positions:
+            raise ValueError("指定した goal_id が道路ネットワークに存在しません。")
+        if goal_point is None:
+            gx, gy = node_positions[goal_id]
+            goal_point = Point(gx, gy)
+    else:
+        goal_id = nearest_node(goal_point)
 
     if start_id is None or goal_id is None:
         raise ValueError("出発点 / 到着点を道路ネットワークにスナップできませんでした。")
 
+    # --- 通行止め適用 ---
+    if blocked_edges:
+        for u, v in blocked_edges:
+            if G.has_edge(u, v):
+                G[u][v]["weight"] = float("inf")
+            if G.has_edge(v, u):
+                G[v][u]["weight"] = float("inf")
+
     # --- 最短経路探索 ---
     try:
-        dlite = DStarLite(G, start_id, goal_id, node_positions)
+        dlite = DStarLite(
+            G,
+            start_id,
+            goal_id,
+            node_positions,
+            initial_state=initial_state,
+        )
+        if new_blocked_edges:
+            for u, v in new_blocked_edges:
+                dlite.update_vertex(u)
+                dlite.update_vertex(v)
         dlite.compute_shortest_path()
         route = dlite.extract_path()
         #最短ルートの距離を取得
@@ -127,7 +188,14 @@ def run_dlite_algorithm(
         "graph": G,
         "node_positions": node_positions,
         "edge_geom_map": edge_geom_map,
-        "route_coords": route_coords
+        "route_coords": route_coords,
+        "start_id": start_id,
+        "goal_id": goal_id,
+        "blocked_edges": [
+            {"u": u, "v": v}
+            for u, v in blocked_edges
+        ],
+        "dlite_state": dlite.export_state(),
     }
 
 def build_route_coords(path, edge_geom_map):
