@@ -1,18 +1,10 @@
 # QGIS project temporary files
 *.aux.xml
-*.qml
 *.qgd
-*.qmd
 *.qgz~
 *.qgs~
 *.bak
-*.geojson
-*.shp
-*.dbf
-*.prj
-*.shx
 *.xml
-*.cpg
 *.db
 *.qgz
 
@@ -22,7 +14,14 @@ __pycache__/
 .venv/
 *.env
 
+
+
 data/route
+data/raw/city
+data/raw/shelters
+data/raw/terrains
+data/raw/ube_roads.geojson
+data/raw/ube_buildings.geojson
 
 scripts/GET_DATA
 scripts/QGIS/save_route.py
