@@ -1,7 +1,6 @@
 import os
 import geopandas as gpd
 from shapely.geometry import Point
-from shapely.ops import nearest_points
 from pyproj import Transformer
 import numpy as np
 
@@ -17,6 +16,7 @@ def _normalize_point(point) -> Point:
     if isinstance(point, dict) and {"lon", "lat"} <= set(point):
         return Point(float(point["lon"]), float(point["lat"]))
     raise TypeError("start_point は (lon, lat) または {'lon':, 'lat':} 形式で指定してください。")
+
 
 def find_nearest_shelter(
     start_point=None,

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import geopandas as gpd
-from typing import Dict, Optional
+from typing import Dict
 from shapely.geometry import LineString, MultiLineString, Point
 
 # --- パス設定 ---
@@ -32,7 +32,6 @@ def _line_for_distance(geom, target_point: Point):
         lines = list(geom.geoms)
         if not lines:
             return None
-        # 対象点に最も近い線分を選ぶ
         return min(lines, key=lambda g: g.distance(target_point))
     if isinstance(geom, LineString):
         return geom
@@ -62,9 +61,10 @@ def find_nearest_road_edge(
         geom = _line_for_distance(row.geometry, target_point)
         if geom is None:
             continue
+
         try:
             dist = geom.distance(target_point)
-        except Exception:
+        except (ValueError, TypeError):
             continue
 
         if dist < best_dist:

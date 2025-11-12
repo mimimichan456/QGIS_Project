@@ -33,7 +33,7 @@ class DStarLite:
         val = min(self.g[node], self.rhs[node])
         return (val + self._heuristic(self.start, node) + self.km, val)
 
-    
+
     # --- 頂点更新 ---
     def update_vertex(self, u):
         if u != self.goal:
@@ -45,14 +45,14 @@ class DStarLite:
 
         self.U = [(k, n) for k, n in self.U if n != u]
         heapq.heapify(self.U)
-        
+
         if self.g[u] != self.rhs[u]:
             heapq.heappush(self.U, (self._calculate_key(u), u))
 
     # --- 最短経路探索 ---
     def compute_shortest_path(self):
         while self.U:
-            top_key, top_node = self.U[0]
+            top_key, _ = self.U[0]
             if not (top_key < self._calculate_key(self.start) or self.rhs[self.start] != self.g[self.start]):
                 break
 
@@ -66,7 +66,7 @@ class DStarLite:
                 self.g[u] = float("inf")
                 for pred in list(self.G.neighbors(u)) + [u]:
                     self.update_vertex(pred)
-                    
+
     # --- 経路抽出 ---
     def extract_path(self):
         if not isfinite(self.g[self.start]):
@@ -96,6 +96,7 @@ class DStarLite:
             self.last_start = new_start
             self.start = new_start
 
+
     def update_edge_cost(self, u, v, new_weight):
         """エッジ重み変更（通行止め/解除）"""
         if not (self.G.has_node(u) and self.G.has_node(v)):
@@ -124,6 +125,7 @@ class DStarLite:
             "goal": int(self.goal),
             "last_start": int(self.last_start),
         }
+
 
     def _load_state(self, state):
         self.g.update({int(n): float(v) for n, v in state.get("g", {}).items()})
