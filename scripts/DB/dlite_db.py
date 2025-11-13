@@ -1,23 +1,24 @@
 import json
 import os
-import psycopg2
 from psycopg2.extras import Json
 from dotenv import load_dotenv
 from typing import Any, Dict, List, Optional
 from psycopg2 import pool
 
-_connection_pool = None
-
 load_dotenv()
 
 
 def _get_connection():
-    global _connection_pool
-    if _connection_pool is None:
-        _connection_pool = pool.SimpleConnectionPool(
+    if not hasattr(_get_connection, "pool"):
+        _get_connection.pool = pool.SimpleConnectionPool(
             1, 10, os.getenv("DATABASE_URL"), sslmode="require"
         )
-    return _connection_pool.getconn()
+    return _get_connection.pool.getconn()
+
+
+def _put_connection(conn):
+    if hasattr(_get_connection, "pool"):
+        _get_connection.pool.putconn(conn)
 
 
 def save_session_state(
@@ -38,7 +39,7 @@ def save_session_state(
         "goal_point": goal_point,
     }
     query = """
-        INSERT INTO dlite_session (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
+        INSERT INTO dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (session_id)
         DO UPDATE SET g = EXCLUDED.g, rhs = EXCLUDED.rhs, U = EXCLUDED.U,
@@ -58,7 +59,7 @@ def save_session_state(
             Json(blocked_payload),
         ),
     )
-            
+
 def _execute_query(query, params=(), fetch=False):
     conn = _get_connection()
     try:
@@ -68,13 +69,13 @@ def _execute_query(query, params=(), fetch=False):
                 return cur.fetchone()
             conn.commit()
     finally:
-        _connection_pool.putconn(conn)
+        _put_connection(conn)
 
 
 def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
     query = """
         SELECT g, rhs, U, start_id, goal_id, blocked_edges
-        FROM dlite_session
+        FROM dlite_db
         WHERE session_id = %s;
     """
     row = _execute_query(query, (session_id,), fetch=True)

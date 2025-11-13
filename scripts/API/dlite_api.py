@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-from fastapi.responses import FileResponse
 from typing import List, Optional
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
@@ -52,8 +49,8 @@ class DliteRouteResponse(BaseModel):
 class BlockRoadRequest(BaseModel):
     session_id: str
     blocked_point: Coordinate
-    
-    
+
+
 app = FastAPI(
     title="D* Lite Routing API",
     description="Find the closest shelter, compute a route, and manage D* Lite sessions.",

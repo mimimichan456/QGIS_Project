@@ -4,14 +4,13 @@ import numpy as np
 import networkx as nx
 import geopandas as gpd
 from shapely.geometry import Point
+from scripts.QGIS.find_shelter import find_nearest_shelter
+from scripts.QGIS.dlite_algorithm import DStarLite
+# from scripts.QGIS.save_route import save_route_to_shapefile
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-
-from scripts.QGIS.find_shelter import find_nearest_shelter
-from scripts.QGIS.dlite_algorithm import DStarLite
-# from scripts.QGIS.save_route import save_route_to_shapefile
 
 
 def _ensure_point(point):
@@ -73,14 +72,11 @@ def run_dlite_algorithm(
 
     # --- 道路レイヤ読込 ---
     try:
-        try:
-            roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
-        except Exception:
-            roads = gpd.read_file(loads_path)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"道路データが存在しません: {loads_path}")
-    except Exception as e:
-        raise RuntimeError(f"道路データの読込に失敗しました: {e}")
+        roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"道路データが存在しません: {loads_path}") from exc
+    except Exception as exc:
+        raise RuntimeError("道路データの読込に失敗しました") from exc
 
     # --- グラフ構築 ---
     G = nx.Graph()
@@ -159,7 +155,7 @@ def run_dlite_algorithm(
         print("❌ No Path Found.")
         return None
     except Exception as e:
-        raise RuntimeError(f"D* Lite 実行中にエラー発生: {e}")
+        raise RuntimeError("D* Lite 実行中にエラー発生") from e
 
     # --- 座標列を構築 ---
     route_coords = build_route_coords(route, G)
@@ -195,11 +191,8 @@ def build_route_coords(path, graph):
 
 
 if __name__ == "__main__":
-    try:
-        result = run_dlite_algorithm()
-        if not result:
-            sys.exit("❌ 経路が見つかりませんでした")
-    except Exception as e:
-        sys.exit(f"❌ エラー発生: {e}")
+    result = run_dlite_algorithm()
+    if not result:
+        sys.exit("❌ 経路が見つかりませんでした")
 
     # save_route_to_shapefile(result)

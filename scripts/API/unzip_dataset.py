@@ -20,8 +20,12 @@ def unzip_all():
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(extract_dir)
             print(f"✅ Extracted {name}: {extract_dir}")
-        except Exception as e:
-            print(f"❌ Failed to extract {name}: {e}")
+        except zipfile.BadZipFile as e:
+            print(f"❌ Invalid ZIP ({name}): {e}")
+        except PermissionError as e:
+            print(f"❌ Permission error extracting {name}: {e}")
+        except OSError as e:
+            print(f"❌ OS error extracting {name}: {e}")
 
 if __name__ == "__main__":
     unzip_all()
