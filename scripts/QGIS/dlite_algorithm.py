@@ -119,6 +119,11 @@ class DStarLite:
                 self.reached_goal = None
                 return None
 
+            if len(path) > 1000000:
+                print(f"[D*Lite] extract_path path length exceeded at {len(path)}; current={current}")
+                self.reached_goal = None
+                return None
+
             path.append(next_node)#経路として追加
             current = next_node
 
@@ -200,4 +205,3 @@ class DStarLite:
         self.goal_set = set(self.goal_nodes)
         self.goal = self.goal_nodes[0]
         self.reached_goal = None
-

@@ -3,6 +3,7 @@ import math
 import numpy as np
 import networkx as nx
 import geopandas as gpd
+import time
 from shapely.geometry import Point
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
@@ -296,37 +297,69 @@ def run_dlite_algorithm(
             if G.has_edge(u, v):
                 G[u][v]["weight"] = float("inf")
 
-    dlite = DStarLite(G, start_id, goal_nodes, node_positions, initial_state=initial_state)
+    print(f"[D*Lite] ゴール候補ノード: {goal_nodes}")
+    best_result = None
 
-    if edge_updates:
-        for upd in edge_updates:
-            u, v = upd["u"], upd["v"]
-            if upd["weight"] is not None:
-                dlite.update_edge_cost(u, v, upd["weight"])
-            elif upd["blocked"]:
-                dlite.update_edge_cost(u, v, float("inf"))
-            else:
-                dlite.update_edge_cost(u, v, None)
+    for idx, goal_node in enumerate(goal_nodes):
+        goal_meta = goal_metadata.get(goal_node)
+        dlite_state = initial_state if idx == 0 and initial_state else None
+        dlite = DStarLite(G, start_id, [goal_node], node_positions, initial_state=dlite_state)
 
-    dlite.compute_shortest_path()
-    route = _simplify_route_nodes(dlite.extract_path())
+        if edge_updates:
+            for upd in edge_updates:
+                u, v = upd["u"], upd["v"]
+                if upd["weight"] is not None:
+                    dlite.update_edge_cost(u, v, upd["weight"])
+                elif upd["blocked"]:
+                    dlite.update_edge_cost(u, v, float("inf"))
+                else:
+                    dlite.update_edge_cost(u, v, None)
 
-    reached_goal_id = dlite.get_reached_goal() if route else None
-    if reached_goal_id is None and goal_nodes:
-        reached_goal_id = goal_nodes[0]
+        start_compute = time.time()
+        dlite.compute_shortest_path()
+        elapsed = time.time() - start_compute
+        print(f"[D*Lite] goal {goal_node} compute 実行時間: {elapsed:.2f} 秒")
+        print("[D*Lite] extract_path 開始")
+        raw_route = dlite.extract_path()
+        print(f"[D*Lite] extract_path 結果: {raw_route[:10] if raw_route else raw_route}")
+        route = _simplify_route_nodes(raw_route)
 
-    total_dist = sum(
-        float(G[route[i]][route[i + 1]]["weight"])
-        for i in range(len(route) - 1)
-        if math.isfinite(G[route[i]][route[i + 1]]["weight"])
-    )
+        if not route or dlite.get_reached_goal() != goal_node:
+            print(f"[D*Lite] goal {goal_node} route not found")
+            continue
 
+        total_dist = sum(
+            float(G[route[i]][route[i + 1]]["weight"])
+            for i in range(len(route) - 1)
+            if math.isfinite(G[route[i]][route[i + 1]]["weight"])
+        )
+        print(f"[D*Lite] goal {goal_node} total_dist={total_dist}")
+
+        if best_result is None:
+            is_better = True
+        else:
+            is_better = total_dist < best_result["distance"]
+        if is_better:
+            best_result = {
+                "route": route,
+                "distance": total_dist,
+                "goal_id": goal_node,
+                "dlite_state": dlite.export_state(),
+                "goal_meta": goal_meta,
+            }
+
+    if not best_result:
+        raise ValueError("到達可能なゴールがありません。")
+
+    route = best_result["route"]
+    total_dist = best_result["distance"]
+    reached_goal_id = best_result["goal_id"]
     route_coords = build_route_coords(route, G, node_positions)
 
     print(f"📏 距離: {total_dist:.2f} m")
     print(f"🛣️ ノード数: {len(route)}")
 
-    selected_goal_meta = goal_metadata.get(reached_goal_id)
+    selected_goal_meta = best_result.get("goal_meta")
     if selected_goal_meta:
         selected_goal_point = selected_goal_meta["goal_point"]
         selected_goal_attr = selected_goal_meta.get("shelter_attr", {})
@@ -350,7 +383,7 @@ def run_dlite_algorithm(
         "goal_candidates": goal_candidates_payload,
         "selected_shelter_attr": selected_goal_attr,
         "blocked_edges": [{"u": int(u), "v": int(v)} for u, v in (blocked_edges or [])],
-        "dlite_state": dlite.export_state(),
+        "dlite_state": best_result["dlite_state"],
     }
 
 
