@@ -1,3 +1,6 @@
+import os
+import json
+
 from typing import List, Optional
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
@@ -5,8 +8,15 @@ from pydantic import BaseModel, Field
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.run_algorithm import run_dlite_algorithm
 from scripts.QGIS.find_load import find_nearest_road_edge
-from scripts.DB.dlite_db import save_session_state, load_session_state
+from scripts.DB.dlite_db import (
+    save_session_state,
+    load_session_state,
+    reset_blocked_point as db_reset_blocked_point,
+)
 
+
+GEOJSON_DIR = os.path.join(os.path.dirname(__file__), "../../data/route/geojson")
+os.makedirs(GEOJSON_DIR, exist_ok=True)
 
 class Coordinate(BaseModel):
     lon: float = Field(..., ge=-180, le=180, description="Longitude in EPSG:4326")
@@ -31,7 +41,7 @@ class FindShelterResponse(BaseModel):
 class DliteRouteRequest(BaseModel):
     session_id: Optional[str] = None
     start_point: Coordinate
-    goal_point: Coordinate
+    goal_point: List[Coordinate]
 
 
 class BlockedEdge(BaseModel):
@@ -40,29 +50,30 @@ class BlockedEdge(BaseModel):
 
 
 class GoalCandidate(BaseModel):
-    node_id: int
     goal_point: Coordinate
-    shelter_attr: dict
-    distance_m: Optional[float] = None
 
 
 class DliteRouteResponse(BaseModel):
     session_id: str
     start_point: Coordinate
-    goal_point: Coordinate
     distance_m: float
-    node_count: int
-    route_nodes: List[int]
     route_coords: List[Coordinate]
-    route_geojson: dict
     blocked_edges: List[BlockedEdge]
     goal_candidates: List[GoalCandidate] = []
-    selected_shelter_attr: dict = {}
 
 
 class BlockRoadRequest(BaseModel):
     session_id: str
     blocked_point: Coordinate
+
+
+class ResetBlockedPointRequest(BaseModel):
+    session_id: str
+
+
+class ResetBlockedPointResponse(BaseModel):
+    session_id: str
+    status: str
 
 
 app = FastAPI(
@@ -88,13 +99,6 @@ def _route_coords_to_models(coords):
     return [Coordinate(lon=lon, lat=lat) for lon, lat in coords]
 
 
-def _route_coords_to_geojson(coords):
-    return {
-        "type": "LineString",
-        "coordinates": coords,
-    }
-
-
 def _coordinate_to_dict(coord: Coordinate):
     return {"lon": coord.lon, "lat": coord.lat}
 
@@ -103,8 +107,18 @@ def _blocked_edges_to_models(edges):
     return [BlockedEdge(u=edge["u"], v=edge["v"]) for edge in (edges or [])]
 
 
-def _persist_session(session_id: str, result, start_coord: Coordinate, goal_coord: Coordinate):
+def _persist_session(session_id: str, result, start_coord: Coordinate):
     state = result["dlite_state"]
+    goal_points = [item["goal_point"] for item in (result.get("goal_candidates") or [])]
+    if not goal_points and result.get("goal"):
+        goal_points = [result["goal"]]
+    goal_id = result.get("goal_id")
+    if goal_id is None:
+        node_ids = result.get("goal_node_ids") or []
+        if node_ids:
+            goal_id = node_ids[0]
+        else:
+            goal_id = result["start_id"]
     try:
         save_session_state(
             session_id,
@@ -112,24 +126,39 @@ def _persist_session(session_id: str, result, start_coord: Coordinate, goal_coor
             rhs=state["rhs"],
             queue=state["U"],
             start_id=result["start_id"],
-            goal_id=result["goal_id"],
+            goal_id=int(goal_id),
+            goal_node_ids=result.get("goal_node_ids") or [],
             blocked_edges=result["blocked_edges"],
             start_point=_coordinate_to_dict(start_coord),
-            goal_point=_coordinate_to_dict(goal_coord),
-            goal_node_ids=result.get("goal_node_ids"),
-            goal_candidates=result.get("goal_candidates"),
+            goal_points=goal_points,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to persist session: {exc}") from exc
 
+def save_route_geojson(session_id: str, coords):
+    """route_coords → GeoJSONファイルとして保存"""
+    geojson_data = {
+        "type": "Feature",
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[float(lon), float(lat)] for lon, lat in coords],
+        },
+        "properties": {
+            "session_id": session_id
+        }
+    }
+
+    file_path = os.path.join(GEOJSON_DIR, f"{session_id}.geojson")
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(geojson_data, f, ensure_ascii=False, indent=2)
+
+    return file_path
 
 def _build_response(session_id: str, result) -> DliteRouteResponse:
     candidates = [
         GoalCandidate(
-            node_id=item["node_id"],
             goal_point=_point_to_coordinate(item["goal_point"]),
-            shelter_attr=item.get("shelter_attr") or {},
-            distance_m=item.get("distance_m"),
         )
         for item in (result.get("goal_candidates") or [])
     ]
@@ -137,15 +166,10 @@ def _build_response(session_id: str, result) -> DliteRouteResponse:
     return DliteRouteResponse(
         session_id=session_id,
         start_point=_point_to_coordinate(result["start"]),
-        goal_point=_point_to_coordinate(result["goal"]),
         distance_m=result["distance_m"],
-        node_count=len(result["route_nodes"]),
-        route_nodes=result["route_nodes"],
         route_coords=_route_coords_to_models(result["route_coords"]),
-        route_geojson=_route_coords_to_geojson(result["route_coords"]),
         blocked_edges=_blocked_edges_to_models(result["blocked_edges"]),
         goal_candidates=candidates,
-        selected_shelter_attr=result.get("selected_shelter_attr") or {},
     )
 
 
@@ -182,7 +206,7 @@ def compute_route(payload: DliteRouteRequest):
     try:
         result = run_dlite_algorithm(
             start_point=(payload.start_point.lon, payload.start_point.lat),
-            goal_point=(payload.goal_point.lon, payload.goal_point.lat),
+            goal_point=[{"lon": p.lon, "lat": p.lat} for p in payload.goal_point],
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -190,8 +214,9 @@ def compute_route(payload: DliteRouteRequest):
     if not result:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    _persist_session(session_id, result, payload.start_point, payload.goal_point)
-
+    _persist_session(session_id, result, payload.start_point)
+    # GeoJSON を自動保存
+    save_route_geojson(session_id, result["route_coords"])
     return _build_response(session_id, result)
 
 
@@ -200,14 +225,17 @@ def reroute(payload: BlockRoadRequest):
     session = load_session_state(payload.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if not session.get("start_point") or not session.get("goal_point"):
+    if not session.get("start_point"):
         raise HTTPException(status_code=500, detail="Session is missing start/goal coordinates")
 
     blocked_edges = session.get("blocked_edges") or []
     start_point = session["start_point"]
-    goal_point = session["goal_point"]
-    goal_candidates = session.get("goal_candidates")
-    goal_node_ids = session.get("goal_node_ids") or [session["goal_id"]]
+    goal_points = session.get("goal_points") or []
+    if not goal_points and session.get("goal_point"):
+        goal_points = [session["goal_point"]]
+    goal_node_ids = session.get("goal_node_ids") or []
+    if not goal_node_ids and session.get("goal_id") is not None:
+        goal_node_ids = [session["goal_id"]]
 
     try:
         nearest_edge = find_nearest_road_edge(
@@ -230,7 +258,7 @@ def reroute(payload: BlockRoadRequest):
     try:
         result = run_dlite_algorithm(
             start_point=start_point,
-            goal_point=goal_candidates or goal_point,
+            goal_point=goal_points,
             start_node_id=session["start_id"],
             goal_node_id=goal_node_ids,
             initial_state=initial_state,
@@ -248,5 +276,15 @@ def reroute(payload: BlockRoadRequest):
         raise HTTPException(status_code=404, detail="Route not found")
 
     result["blocked_edges"] = blocked_edges
-    _persist_session(payload.session_id, result, _point_to_coordinate(start_point), _point_to_coordinate(goal_point))
+    _persist_session(payload.session_id, result, _point_to_coordinate(start_point))
+    # GeoJSON を自動保存
+    save_route_geojson(payload.session_id, result["route_coords"])
     return _build_response(payload.session_id, result)
+
+
+@app.post("/reset-blocked-point", response_model=ResetBlockedPointResponse)
+def reset_blocked_point(payload: ResetBlockedPointRequest):
+    updated = db_reset_blocked_point(payload.session_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return ResetBlockedPointResponse(session_id=payload.session_id, status="reset")

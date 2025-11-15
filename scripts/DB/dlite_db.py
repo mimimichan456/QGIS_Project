@@ -31,16 +31,14 @@ def save_session_state(
     goal_id: int,
     blocked_edges: List[Dict[str, int]],
     start_point: Dict[str, float],
-    goal_point: Dict[str, float],
+    goal_points: List[Dict[str, float]],
     goal_node_ids: Optional[List[int]] = None,
-    goal_candidates: Optional[List[Dict[str, Any]]] = None,
 ):
     blocked_payload = {
         "edges": blocked_edges,
         "start_point": start_point,
-        "goal_point": goal_point,
+        "goal_points": goal_points,
         "goal_node_ids": goal_node_ids,
-        "goal_candidates": goal_candidates,
     }
     query = """
         INSERT INTO dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
@@ -93,6 +91,10 @@ def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
     else:
         blocked_payload = blocked_json or {}
 
+    goal_points = blocked_payload.get("goal_points") or []
+    if not goal_points and blocked_payload.get("goal_point"):
+        goal_points = [blocked_payload.get("goal_point")]
+
     return {
         "g": g or {},
         "rhs": rhs or {},
@@ -102,7 +104,36 @@ def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
         "goal_id": int(goal_id),
         "blocked_edges": blocked_payload.get("edges", []),
         "start_point": blocked_payload.get("start_point"),
+        "goal_points": goal_points,
         "goal_point": blocked_payload.get("goal_point"),
-        "goal_node_ids": blocked_payload.get("goal_node_ids"),
-        "goal_candidates": blocked_payload.get("goal_candidates"),
+        "goal_node_ids": blocked_payload.get("goal_node_ids") or [],
     }
+
+
+def reset_blocked_point(session_id: str) -> bool:
+    query = """
+        SELECT blocked_edges
+        FROM dlite_db
+        WHERE session_id = %s;
+    """
+    row = _execute_query(query, (session_id,), fetch=True)
+    if not row:
+        return False
+
+    blocked_json = row[0]
+    if isinstance(blocked_json, str):
+        payload = json.loads(blocked_json) if blocked_json else {}
+    else:
+        payload = blocked_json or {}
+
+    payload["blocked_point"] = {}
+    payload["edges"] = []
+
+    update_query = """
+        UPDATE dlite_db
+        SET blocked_edges = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE session_id = %s;
+    """
+    _execute_query(update_query, (Json(payload), session_id))
+    return True

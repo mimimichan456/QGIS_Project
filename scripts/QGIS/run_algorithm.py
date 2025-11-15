@@ -106,18 +106,49 @@ def _nearest_node(point, node_ids, node_coords):
     return int(node_ids[min_idx])
 
 #  ノード列からルート座標列を構築
-def build_route_coords(path, graph):
+def _coords_close(c1, c2, tol=1e-9):
+    return abs(c1[0] - c2[0]) <= tol and abs(c1[1] - c2[1]) <= tol
+
+
+def build_route_coords(path, graph, node_positions):
     route_coords = []
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
         geom_line = graph[u][v].get("geometry")
         if not geom_line:
             continue
-        if route_coords and (route_coords[-1] == geom_line[0]):
-            geom_line = geom_line[1:]
-        route_coords.extend(geom_line)
+        coords = list(geom_line)
+        if len(coords) < 2:
+            continue
+        node_u = tuple(node_positions.get(u, coords[0]))
+        node_v = tuple(node_positions.get(v, coords[-1]))
+        start_matches_u = _coords_close(coords[0], node_u)
+        end_matches_u = _coords_close(coords[-1], node_u)
+        if not start_matches_u and end_matches_u:
+            coords = list(reversed(coords))
+        elif not start_matches_u and not _coords_close(coords[0], node_v):
+            coords = [node_u, node_v]
+        if route_coords and _coords_close(route_coords[-1], coords[0]):
+            coords = coords[1:]
+        route_coords.extend(coords)
     return route_coords
 
+
+def _simplify_route_nodes(nodes):
+    if not nodes:
+        return []
+    simplified = []
+    index_map = {}
+    for node in nodes:
+        if node in index_map:
+            loop_start = index_map[node]
+            for removed in simplified[loop_start + 1 :]:
+                index_map.pop(removed, None)
+            simplified = simplified[: loop_start + 1]
+        else:
+            simplified.append(node)
+            index_map[node] = len(simplified) - 1
+    return simplified
 
 def run_dlite_algorithm(
     loads_path=os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
@@ -265,7 +296,6 @@ def run_dlite_algorithm(
             if G.has_edge(u, v):
                 G[u][v]["weight"] = float("inf")
 
-    # --- D* Lite 実行（マルチゴールを同時にセット） ---
     dlite = DStarLite(G, start_id, goal_nodes, node_positions, initial_state=initial_state)
 
     if edge_updates:
@@ -279,22 +309,19 @@ def run_dlite_algorithm(
                 dlite.update_edge_cost(u, v, None)
 
     dlite.compute_shortest_path()
-
-    route = dlite.extract_path() or []
+    route = _simplify_route_nodes(dlite.extract_path())
 
     reached_goal_id = dlite.get_reached_goal() if route else None
     if reached_goal_id is None and goal_nodes:
         reached_goal_id = goal_nodes[0]
 
-    # --- 距離計算 ---
     total_dist = sum(
         float(G[route[i]][route[i + 1]]["weight"])
         for i in range(len(route) - 1)
         if math.isfinite(G[route[i]][route[i + 1]]["weight"])
     )
 
-    # --- 最短経路座標列を構築 ---
-    route_coords = build_route_coords(route, G)
+    route_coords = build_route_coords(route, G, node_positions)
 
     print(f"📏 距離: {total_dist:.2f} m")
     print(f"🛣️ ノード数: {len(route)}")
@@ -311,7 +338,6 @@ def run_dlite_algorithm(
             selected_goal_point = goal_candidates_payload[0]["goal_point"]
         selected_goal_attr = {}
 
-    # --- ルート結果とゴール候補メタデータを返却 ---
     return {
         "start": _point_to_lonlat(start_point),
         "goal": selected_goal_point,
