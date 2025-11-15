@@ -6,6 +6,7 @@ uvicorn[standard]
 pydantic
 networkx
 python-dotenv
+numpy
 
 # --- Geospatial stack ---
 geopandas

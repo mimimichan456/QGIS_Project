@@ -1,11 +1,12 @@
 import os
+import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
-from pyproj import Transformer
-import numpy as np
 
+# プロジェクト内のデータ配置を把握するための基本パス
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "../../data")
+
 
 def _normalize_point(point) -> Point:
     """入力を shapely Point に統一"""
@@ -15,69 +16,81 @@ def _normalize_point(point) -> Point:
         return Point(float(point[0]), float(point[1]))
     if isinstance(point, dict) and {"lon", "lat"} <= set(point):
         return Point(float(point["lon"]), float(point["lat"]))
-    raise TypeError("start_point は (lon, lat) または {'lon':, 'lat':} 形式で指定してください。")
 
 
 def find_nearest_shelter(
     start_point=None,
     univ_path=os.path.join(DATA_DIR, "raw/university/ube_university.shp"),
     shelter_path=os.path.join(DATA_DIR, "processed/shelters/ube_shelters.shp"),
+    metric_crs: str = "EPSG:6677",
+    top_k: int = 3,
 ):
-    # --- ファイル存在チェック ---
-    if not os.path.exists(univ_path):
-        raise FileNotFoundError(f"大学データが見つかりません: {univ_path}")
-    if not os.path.exists(shelter_path):
-        raise FileNotFoundError(f"避難所データが見つかりません: {shelter_path}")
-
-    # --- シェープファイル読込 ---
+    # --- シェープファイル読込（大学と避難所の位置） ---
     gdf_univ = gpd.read_file(univ_path)
     gdf_shelter = gpd.read_file(shelter_path)
 
-    if gdf_univ.empty:
-        raise ValueError("大学シェープファイルに地物がありません。")
-    if gdf_shelter.empty:
-        raise ValueError("避難所シェープファイルに地物がありません。")
+    # --- 距離計算用にメートル系へ変換　---
+    gdf_univ_metric = gdf_univ.to_crs(metric_crs)
+    gdf_shelter_metric = gdf_shelter.to_crs(metric_crs)
 
-    # --- 座標系を統一 (EPSG:4326) ---
-    gdf_univ = gdf_univ.to_crs(epsg=4326)
-    gdf_shelter = gdf_shelter.to_crs(epsg=4326)
-
-    # --- 出発点 ---
+    # --- 出発地点設定（指定がなければ大学の最初の点） ---
     if start_point is None:
-        start_point = gdf_univ.geometry.iloc[0]
+        start_point_metric = gdf_univ_metric.geometry.iloc[0] # 大学の点を地物に
     else:
-        start_point = _normalize_point(start_point)
+        start_point_metric = (
+            gpd.GeoSeries([_normalize_point(start_point)], crs="EPSG:4326")
+            .to_crs(metric_crs)
+            .iloc[0]
+        )
 
-    # --- 距離計算は平面上で実施（EPSG:3857）---
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
-    start_x, start_y = transformer.transform(start_point.x, start_point.y)
+    # --- 避難所からの距離を計算し近い順にソート ---
+    shelter_coords = np.column_stack(
+        (gdf_shelter_metric.geometry.x.values, gdf_shelter_metric.geometry.y.values)
+    )
 
-    # 投影した避難所座標をNumPy配列化
-    shelter_coords = gdf_shelter.geometry.apply(
-        lambda g: transformer.transform(g.x, g.y)
-    ).to_list()
+    target_vec = np.array([start_point_metric.x, start_point_metric.y])
+    deltas = shelter_coords - target_vec
+    dist_sq = np.einsum("ij,ij->i", deltas, deltas)
+    order = np.argsort(dist_sq)
 
-    # --- ベクトル化距離計算（最速） ---
-    pts = np.array(shelter_coords)
-    if pts.size == 0:
-        raise ValueError("有効な避難所座標が存在しません。")
+    #top_k個の避難所に絞る
+    if top_k > 0:
+        order = order[: min(top_k, len(order))]
 
-    dists = np.sqrt((pts[:, 0] - start_x) ** 2 + (pts[:, 1] - start_y) ** 2)
-    if not np.isfinite(dists).any():
-        raise ValueError("距離計算に失敗しました（座標に欠損が含まれる可能性があります）。")
+    # --- 避難所を配列化 ---
+    candidates = []
+    for idx in order:
+        idx = int(idx)
+        row_metric = gdf_shelter_metric.iloc[idx]
 
-    idx = int(np.argmin(dists))
-    nearest_row = gdf_shelter.iloc[idx]
-    goal_geom = nearest_row.geometry
+        row_wgs = (
+            gpd.GeoSeries([row_metric.geometry], crs=metric_crs)
+            .to_crs("EPSG:4326")
+            .iloc[0]
+        )
 
-    goal_attr = {
-        k: (v.item() if isinstance(v, (np.generic,)) else v)
-        for k, v in nearest_row.drop(labels=["geometry"]).to_dict().items()
-    }
+        attrs = {
+            k: v
+            for k, v in gdf_shelter.iloc[idx].drop(labels=["geometry"]).to_dict().items()
+        }
 
-    # --- 結果構築 ---
+        candidates.append(
+            {
+                "goal_point": {"lon": row_wgs.x, "lat": row_wgs.y},
+                "shelter_attr": attrs,
+                "distance_m": float(dist_sq[idx] ** 0.5),
+            }
+        )
+
+    # --- 出発地点を WGS84 に戻す ---
+    start_point_wgs = (
+        gpd.GeoSeries([start_point_metric], crs=metric_crs)
+        .to_crs("EPSG:4326")
+        .iloc[0]
+    )
+
+    # --- 結果を最寄り候補 + 候補一覧で返す ---
     return {
-        "start_point": {"lon": start_point.x, "lat": start_point.y},
-        "goal_point": {"lon": goal_geom.x, "lat": goal_geom.y},
-        "shelter_attr": goal_attr,
+        "start_point": {"lon": start_point_wgs.x, "lat": start_point_wgs.y},
+        "candidate_shelters": candidates,
     }

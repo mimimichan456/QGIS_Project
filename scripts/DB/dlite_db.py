@@ -32,11 +32,15 @@ def save_session_state(
     blocked_edges: List[Dict[str, int]],
     start_point: Dict[str, float],
     goal_point: Dict[str, float],
+    goal_node_ids: Optional[List[int]] = None,
+    goal_candidates: Optional[List[Dict[str, Any]]] = None,
 ):
     blocked_payload = {
         "edges": blocked_edges,
         "start_point": start_point,
         "goal_point": goal_point,
+        "goal_node_ids": goal_node_ids,
+        "goal_candidates": goal_candidates,
     }
     query = """
         INSERT INTO dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
@@ -99,4 +103,6 @@ def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
         "blocked_edges": blocked_payload.get("edges", []),
         "start_point": blocked_payload.get("start_point"),
         "goal_point": blocked_payload.get("goal_point"),
+        "goal_node_ids": blocked_payload.get("goal_node_ids"),
+        "goal_candidates": blocked_payload.get("goal_candidates"),
     }

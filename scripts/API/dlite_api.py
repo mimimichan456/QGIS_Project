@@ -17,10 +17,15 @@ class FindShelterRequest(BaseModel):
     start_point: Coordinate
 
 
-class FindShelterResponse(BaseModel):
-    start_point: Coordinate
+class ShelterCandidate(BaseModel):
     goal_point: Coordinate
     shelter_attr: dict
+    distance_m: float
+
+
+class FindShelterResponse(BaseModel):
+    start_point: Coordinate
+    candidates: List[ShelterCandidate]
 
 
 class DliteRouteRequest(BaseModel):
@@ -34,6 +39,13 @@ class BlockedEdge(BaseModel):
     v: int
 
 
+class GoalCandidate(BaseModel):
+    node_id: int
+    goal_point: Coordinate
+    shelter_attr: dict
+    distance_m: Optional[float] = None
+
+
 class DliteRouteResponse(BaseModel):
     session_id: str
     start_point: Coordinate
@@ -44,6 +56,8 @@ class DliteRouteResponse(BaseModel):
     route_coords: List[Coordinate]
     route_geojson: dict
     blocked_edges: List[BlockedEdge]
+    goal_candidates: List[GoalCandidate] = []
+    selected_shelter_attr: dict = {}
 
 
 class BlockRoadRequest(BaseModel):
@@ -102,12 +116,24 @@ def _persist_session(session_id: str, result, start_coord: Coordinate, goal_coor
             blocked_edges=result["blocked_edges"],
             start_point=_coordinate_to_dict(start_coord),
             goal_point=_coordinate_to_dict(goal_coord),
+            goal_node_ids=result.get("goal_node_ids"),
+            goal_candidates=result.get("goal_candidates"),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to persist session: {exc}") from exc
 
 
 def _build_response(session_id: str, result) -> DliteRouteResponse:
+    candidates = [
+        GoalCandidate(
+            node_id=item["node_id"],
+            goal_point=_point_to_coordinate(item["goal_point"]),
+            shelter_attr=item.get("shelter_attr") or {},
+            distance_m=item.get("distance_m"),
+        )
+        for item in (result.get("goal_candidates") or [])
+    ]
+
     return DliteRouteResponse(
         session_id=session_id,
         start_point=_point_to_coordinate(result["start"]),
@@ -118,6 +144,8 @@ def _build_response(session_id: str, result) -> DliteRouteResponse:
         route_coords=_route_coords_to_models(result["route_coords"]),
         route_geojson=_route_coords_to_geojson(result["route_coords"]),
         blocked_edges=_blocked_edges_to_models(result["blocked_edges"]),
+        goal_candidates=candidates,
+        selected_shelter_attr=result.get("selected_shelter_attr") or {},
     )
 
 
@@ -136,15 +164,21 @@ def find_shelter(payload: FindShelterRequest):
 
     return FindShelterResponse(
         start_point=_point_to_coordinate(result["start_point"]),
-        goal_point=_point_to_coordinate(result["goal_point"]),
-        shelter_attr=result["shelter_attr"],
+        candidates=[
+            ShelterCandidate(
+                goal_point=_point_to_coordinate(item["goal_point"]),
+                shelter_attr=item.get("shelter_attr", {}),
+                distance_m=item.get("distance_m", 0.0),
+            )
+            for item in result.get("candidate_shelters", [])
+        ],
     )
 
 
 @app.post("/run-dlite", response_model=DliteRouteResponse)
 def compute_route(payload: DliteRouteRequest):
     session_id = payload.session_id or str(uuid4())
-    
+
     try:
         result = run_dlite_algorithm(
             start_point=(payload.start_point.lon, payload.start_point.lat),
@@ -172,6 +206,8 @@ def reroute(payload: BlockRoadRequest):
     blocked_edges = session.get("blocked_edges") or []
     start_point = session["start_point"]
     goal_point = session["goal_point"]
+    goal_candidates = session.get("goal_candidates")
+    goal_node_ids = session.get("goal_node_ids") or [session["goal_id"]]
 
     try:
         nearest_edge = find_nearest_road_edge(
@@ -194,9 +230,9 @@ def reroute(payload: BlockRoadRequest):
     try:
         result = run_dlite_algorithm(
             start_point=start_point,
-            goal_point=goal_point,
+            goal_point=goal_candidates or goal_point,
             start_node_id=session["start_id"],
-            goal_node_id=session["goal_id"],
+            goal_node_id=goal_node_ids,
             initial_state=initial_state,
             blocked_edges=[(edge["u"], edge["v"]) for edge in blocked_edges],
             new_blocked_edges=[(new_edge["u"], new_edge["v"])],

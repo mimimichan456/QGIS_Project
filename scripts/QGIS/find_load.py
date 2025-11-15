@@ -1,10 +1,7 @@
 import os
-import numpy as np
 import geopandas as gpd
-from typing import Dict
 from shapely.geometry import LineString, MultiLineString, Point
 
-# --- パス設定 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
@@ -18,75 +15,64 @@ def _ensure_point(point) -> Point:
         return Point(float(point[0]), float(point[1]))
     if isinstance(point, dict) and {"lon", "lat"} <= set(point):
         return Point(float(point["lon"]), float(point["lat"]))
-    raise TypeError("point には (lon, lat) or shapely.geometry.Point を指定してください。")
 
-
+#LineString → [[x, y], …] の座標配列に変換
 def _extract_line_coords(geom: LineString) -> list:
-    """LineString → [[x, y], ...]"""
     return list(geom.coords)
 
-
+#MultiLineString のときに 一番近い道路を選ぶ
 def _line_for_distance(geom, target_point: Point):
-    """MultiLineString対応 — 対象点に最も近い線分を選択"""
     if isinstance(geom, MultiLineString):
         lines = list(geom.geoms)
         if not lines:
             return None
         return min(lines, key=lambda g: g.distance(target_point))
+
     if isinstance(geom, LineString):
         return geom
+
     return None
 
-
+# 指定した座標に最も近い道路を返す
 def find_nearest_road_edge(
     point,
     loads_path: str = os.path.join(DATA_DIR, "processed/roads/ube_roads.shp")
-) -> Dict:
+):
+    # --- 入力位置を Point に正規化 ---
     target_point = _ensure_point(point)
 
-    if not os.path.exists(loads_path):
-        raise FileNotFoundError(f"道路データが見つかりません: {loads_path}")
-
+    # --- 道路レイヤを読み込み、緯度経度へ統一 ---
     roads = gpd.read_file(loads_path)
-    if roads.empty:
-        raise ValueError("道路データが空です。")
-
     roads = roads[roads.geometry.notnull()].to_crs(epsg=4326)
 
     best_row = None
     best_geom = None
     best_dist = float("inf")
 
+    # --- 全ての道路について距離計算し、最短の線分を保持 ---
     for _, row in roads.iterrows():
         geom = _line_for_distance(row.geometry, target_point)
         if geom is None:
             continue
 
-        try:
-            dist = geom.distance(target_point)
-        except (ValueError, TypeError):
-            continue
+        dist = geom.distance(target_point)
 
         if dist < best_dist:
             best_dist = dist
             best_row = row
             best_geom = geom
 
-    if best_row is None or best_geom is None:
-        raise ValueError("該当する道路エッジが見つかりませんでした。")
-
     u, v = best_row.get("u"), best_row.get("v")
-    if u is None or v is None:
-        raise ValueError("ノードID (u, v) が欠落しています。")
 
     properties = {
-        k: (float(v) if isinstance(v, (np.floating,)) else v)
+        k: v
         for k, v in best_row.drop(labels=["geometry"]).to_dict().items()
     }
 
+    # --- 最近接エッジ情報を整形して返却 ---
     return {
         "edge": (int(u), int(v)),
-        "distance": best_dist,
+        "distance": float(best_dist),
         "geometry": _extract_line_coords(best_geom),
         "properties": properties,
     }
