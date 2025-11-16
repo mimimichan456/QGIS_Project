@@ -17,6 +17,7 @@ from scripts.DB.dlite_db import (
 
 GEOJSON_DIR = os.path.join(os.path.dirname(__file__), "../../data/route/geojson")
 os.makedirs(GEOJSON_DIR, exist_ok=True)
+SAVE_ROUTE_GEOJSON = os.getenv("SAVE_ROUTE_GEOJSON", "0").lower() in {"1", "true", "yes"}
 
 class Coordinate(BaseModel):
     lon: float = Field(..., ge=-180, le=180, description="Longitude in EPSG:4326")
@@ -215,8 +216,8 @@ def compute_route(payload: DliteRouteRequest):
         raise HTTPException(status_code=404, detail="Route not found")
 
     _persist_session(session_id, result, payload.start_point)
-    # GeoJSON を自動保存
-    save_route_geojson(session_id, result["route_coords"])
+    if SAVE_ROUTE_GEOJSON:
+        save_route_geojson(session_id, result["route_coords"])
     return _build_response(session_id, result)
 
 
@@ -277,8 +278,8 @@ def reroute(payload: BlockRoadRequest):
 
     result["blocked_edges"] = blocked_edges
     _persist_session(payload.session_id, result, _point_to_coordinate(start_point))
-    # GeoJSON を自動保存
-    save_route_geojson(payload.session_id, result["route_coords"])
+    if SAVE_ROUTE_GEOJSON:
+        save_route_geojson(payload.session_id, result["route_coords"])
     return _build_response(payload.session_id, result)
 
 
