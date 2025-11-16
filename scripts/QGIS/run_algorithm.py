@@ -323,7 +323,6 @@ def run_dlite_algorithm(
         raw_route = dlite.extract_path()
         print(f"[D*Lite] extract_path 結果: {raw_route[:10] if raw_route else raw_route}")
         route = _simplify_route_nodes(raw_route)
-
         if not route or dlite.get_reached_goal() != goal_node:
             print(f"[D*Lite] goal {goal_node} route not found")
             continue
@@ -335,11 +334,7 @@ def run_dlite_algorithm(
         )
         print(f"[D*Lite] goal {goal_node} total_dist={total_dist}")
 
-        if best_result is None:
-            is_better = True
-        else:
-            is_better = total_dist < best_result["distance"]
-        if is_better:
+        if best_result is None or total_dist < best_result["distance"]:
             best_result = {
                 "route": route,
                 "distance": total_dist,
@@ -354,12 +349,13 @@ def run_dlite_algorithm(
     route = best_result["route"]
     total_dist = best_result["distance"]
     reached_goal_id = best_result["goal_id"]
+    dlite_state = best_result["dlite_state"]
     route_coords = build_route_coords(route, G, node_positions)
 
     print(f"📏 距離: {total_dist:.2f} m")
     print(f"🛣️ ノード数: {len(route)}")
 
-    selected_goal_meta = best_result.get("goal_meta")
+    selected_goal_meta = goal_metadata.get(reached_goal_id)
     if selected_goal_meta:
         selected_goal_point = selected_goal_meta["goal_point"]
         selected_goal_attr = selected_goal_meta.get("shelter_attr", {})
@@ -383,7 +379,7 @@ def run_dlite_algorithm(
         "goal_candidates": goal_candidates_payload,
         "selected_shelter_attr": selected_goal_attr,
         "blocked_edges": [{"u": int(u), "v": int(v)} for u, v in (blocked_edges or [])],
-        "dlite_state": best_result["dlite_state"],
+        "dlite_state": dlite_state,
     }
 
 
