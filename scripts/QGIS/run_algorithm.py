@@ -4,7 +4,8 @@ import numpy as np
 import networkx as nx
 import geopandas as gpd
 import time
-from shapely.geometry import Point
+from shapely.geometry import Point, LineString
+from shapely.ops import split as shapely_split
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
 # from scripts.QGIS.save_route import save_route_to_shapefile
@@ -106,6 +107,52 @@ def _nearest_node(point, node_ids, node_coords):
     min_idx = int(np.argmin(dist_sq))
     return int(node_ids[min_idx])
 
+
+def _normalize_node_id(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.startswith("__"):
+            return value
+        try:
+            return int(float(value))
+        except ValueError:
+            return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _serialize_node_id(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str):
+        if value.startswith("__"):
+            return value
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _add_edge_with_geometry(graph, a, b, coords):
+    line_geom = LineString(coords)
+    length = float(line_geom.length)
+    graph.add_edge(
+        a,
+        b,
+        weight=length,
+        base_weight=length,
+        geometry=list(coords),
+    )
+
 #  ノード列からルート座標列を構築
 def _coords_close(c1, c2, tol=1e-9):
     return abs(c1[0] - c2[0]) <= tol and abs(c1[1] - c2[1]) <= tol
@@ -150,6 +197,106 @@ def _simplify_route_nodes(nodes):
             simplified.append(node)
             index_map[node] = len(simplified) - 1
     return simplified
+
+
+def _find_nearest_edge(point_geom, graph):
+    best = None
+    best_dist = float("inf")
+    for u, v, data in graph.edges(data=True):
+        if not math.isfinite(data.get("weight", float("inf"))):
+            continue
+        coords = data.get("geometry")
+        if not coords:
+            continue
+        line = LineString(coords) if not isinstance(coords, LineString) else coords
+        dist = line.distance(point_geom)
+        if dist < best_dist:
+            best_dist = dist
+            best = (u, v, line)
+    return best
+
+
+def _generate_pseudo_node_id(node_positions):
+    max_id = 0
+    for key in node_positions:
+        try:
+            val = int(key)
+            if val > max_id:
+                max_id = val
+        except (TypeError, ValueError):
+            continue
+    new_id = max_id + 1
+    while new_id in node_positions:
+        new_id += 1
+    return new_id
+
+
+def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_coords_arr):
+    nearest = _find_nearest_edge(point_geom, graph)
+    if not nearest:
+        print("[snap] no nearest edge, fallback to nearest node")
+        node_id = _nearest_node(point_geom, node_ids_arr, node_coords_arr)
+        snapped = Point(node_positions[node_id])
+        return node_id, snapped
+
+    u, v, line = nearest
+    edge_data = graph[u][v]
+    if not math.isfinite(edge_data.get("weight", float("inf"))):
+        print(f"[snap] edge ({u},{v}) blocked, fallback to nearest node")
+        node_id = _nearest_node(point_geom, node_ids_arr, node_coords_arr)
+        snapped = Point(node_positions[node_id])
+        return node_id, snapped
+
+    proj = line.project(point_geom)
+    if proj <= 1e-9:
+        return u, Point(node_positions[u])
+    if proj >= line.length - 1e-9:
+        return v, Point(node_positions[v])
+
+    split_point = line.interpolate(proj)
+
+    def _split_line(line_obj, new_pt):
+        coords = list(line_obj.coords)
+        acc = 0.0
+        new_coords1 = [coords[0]]
+        new_coords2 = []
+        for i in range(len(coords) - 1):
+            seg_start = coords[i]
+            seg_end = coords[i + 1]
+            seg_line = LineString([seg_start, seg_end])
+            seg_len = seg_line.length
+            if acc + seg_len >= proj - 1e-9:
+                ratio = 0.0 if seg_len == 0 else (proj - acc) / seg_len
+                interp_x = seg_start[0] + ratio * (seg_end[0] - seg_start[0])
+                interp_y = seg_start[1] + ratio * (seg_end[1] - seg_start[1])
+                new_point = (interp_x, interp_y)
+                new_coords1.append(new_point)
+                new_coords2 = [new_point, seg_end]
+                new_coords2.extend(coords[i + 2 :])
+                break
+            acc += seg_len
+            new_coords1.append(seg_end)
+        if len(new_coords2) == 0:
+            return None
+        return LineString(new_coords1), LineString(new_coords2)
+
+    split_segments = _split_line(line, split_point)
+    if not split_segments:
+        print("[snap] split result invalid, fallback to nearest node")
+        node_id = _nearest_node(point_geom, node_ids_arr, node_coords_arr)
+        snapped = Point(node_positions[node_id])
+        return node_id, snapped
+
+    new_node_id = _generate_pseudo_node_id(node_positions)
+    node_positions[new_node_id] = (split_point.x, split_point.y)
+
+    seg_coords = [list(split_segments[0].coords), list(split_segments[1].coords)]
+    graph.remove_edge(u, v)
+
+    _add_edge_with_geometry(graph, u, new_node_id, seg_coords[0])
+    _add_edge_with_geometry(graph, new_node_id, v, seg_coords[1])
+
+    return new_node_id, split_point
 
 def run_dlite_algorithm(
     loads_path=os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
@@ -247,19 +394,28 @@ def run_dlite_algorithm(
     node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
 
     if start_node_id is not None:
-        start_id = int(start_node_id)
-
-        if start_point is None:
+        start_id = _normalize_node_id(start_node_id)
+        if start_point is None and start_id in node_positions:
             sx, sy = node_positions[start_id]
             start_point = Point(sx, sy)
     else:
-        start_id = _nearest_node(start_point, node_ids_arr, node_coords_arr)
+        snapped_id, snapped_point = _insert_point_on_edge(start_point, G, node_positions, node_ids_arr, node_coords_arr)
+        node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
+        start_anchor_id = _generate_pseudo_node_id(node_positions)
+        node_positions[start_anchor_id] = (start_point.x, start_point.y)
+        start_id = start_anchor_id
+        _add_edge_with_geometry(
+            G,
+            start_id,
+            snapped_id,
+            [(start_point.x, start_point.y), (snapped_point.x, snapped_point.y)],
+        )
 
     if goal_node_id is not None:
         if isinstance(goal_node_id, (list, tuple, set)):
-            goal_ids = [int(g) for g in goal_node_id]
+            goal_ids = [_normalize_node_id(g) for g in goal_node_id]
         else:
-            goal_ids = [int(goal_node_id)]
+            goal_ids = [_normalize_node_id(goal_node_id)]
     else:
         goal_ids = []
 
@@ -268,12 +424,25 @@ def run_dlite_algorithm(
     goal_candidates_payload = []
 
     for idx, cand in enumerate(goal_candidates):
+        point = cand["point"]
         if idx < len(goal_ids):
             node_id = goal_ids[idx]
-            point = cand["point"]
+            snapped_point = Point(node_positions.get(node_id, (point.x, point.y)))
         else:
-            point = cand["point"]
-            node_id = _nearest_node(point, node_ids_arr, node_coords_arr)
+            node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
+            snapped_id, snapped_point = _insert_point_on_edge(
+                point, G, node_positions, node_ids_arr, node_coords_arr
+            )
+            node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
+            goal_anchor_id = _generate_pseudo_node_id(node_positions)
+            node_positions[goal_anchor_id] = (point.x, point.y)
+            _add_edge_with_geometry(
+                G,
+                snapped_id,
+                goal_anchor_id,
+                [(snapped_point.x, snapped_point.y), (point.x, point.y)],
+            )
+            node_id = goal_anchor_id
 
         cand["node_id"] = node_id
 
@@ -284,7 +453,7 @@ def run_dlite_algorithm(
         goal_candidates_payload.append(
             {
                 "node_id": int(node_id),
-                "goal_point": cand["goal_point"],
+                "goal_point": _point_to_lonlat(point),
                 "shelter_attr": cand.get("shelter_attr", {}),
                 "distance_m": cand.get("distance_m"),
             }
@@ -373,9 +542,9 @@ def run_dlite_algorithm(
         "distance_m": float(total_dist),
         "route_nodes": route,
         "route_coords": route_coords,
-        "start_id": int(start_id),
-        "goal_id": int(reached_goal_id) if reached_goal_id is not None else None,
-        "goal_node_ids": [int(g) for g in goal_nodes],
+        "start_id": _serialize_node_id(start_id),
+        "goal_id": _serialize_node_id(reached_goal_id),
+        "goal_node_ids": [_serialize_node_id(g) for g in goal_nodes],
         "goal_candidates": goal_candidates_payload,
         "selected_shelter_attr": selected_goal_attr,
         "blocked_edges": [{"u": int(u), "v": int(v)} for u, v in (blocked_edges or [])],
