@@ -41,7 +41,7 @@ def save_session_state(
         "goal_node_ids": goal_node_ids,
     }
     query = """
-        INSERT INTO public.dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
+        INSERT INTO dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (session_id)
         DO UPDATE SET g = EXCLUDED.g, rhs = EXCLUDED.rhs, U = EXCLUDED.U,
@@ -130,7 +130,7 @@ def reset_blocked_point(session_id: str) -> bool:
     payload["edges"] = []
 
     update_query = """
-        UPDATE public.dlite_db
+        UPDATE dlite_db
         SET blocked_edges = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE session_id = %s;
