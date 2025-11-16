@@ -298,6 +298,21 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
 
     return new_node_id, split_point
 
+
+def _ensure_anchor_node(node_id, point_geom, graph, node_positions, node_ids_arr, node_coords_arr):
+    if node_id in node_positions:
+        return node_ids_arr, node_coords_arr
+    snapped_id, snapped_point = _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_coords_arr)
+    node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
+    node_positions[node_id] = (point_geom.x, point_geom.y)
+    _add_edge_with_geometry(
+        graph,
+        node_id,
+        snapped_id,
+        [(point_geom.x, point_geom.y), (snapped_point.x, snapped_point.y)],
+    )
+    return node_ids_arr, node_coords_arr
+
 def run_dlite_algorithm(
     loads_path=os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
     start_point=None,
@@ -395,9 +410,13 @@ def run_dlite_algorithm(
 
     if start_node_id is not None:
         start_id = _normalize_node_id(start_node_id)
-        if start_point is None and start_id in node_positions:
+        if start_id in node_positions and start_point is None:
             sx, sy = node_positions[start_id]
             start_point = Point(sx, sy)
+        if start_id not in node_positions:
+            node_ids_arr, node_coords_arr = _ensure_anchor_node(
+                start_id, start_point, G, node_positions, node_ids_arr, node_coords_arr
+            )
     else:
         snapped_id, snapped_point = _insert_point_on_edge(start_point, G, node_positions, node_ids_arr, node_coords_arr)
         node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
@@ -427,6 +446,10 @@ def run_dlite_algorithm(
         point = cand["point"]
         if idx < len(goal_ids):
             node_id = goal_ids[idx]
+            if node_id not in node_positions:
+                node_ids_arr, node_coords_arr = _ensure_anchor_node(
+                    node_id, point, G, node_positions, node_ids_arr, node_coords_arr
+                )
             snapped_point = Point(node_positions.get(node_id, (point.x, point.y)))
         else:
             node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
