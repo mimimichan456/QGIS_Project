@@ -3,9 +3,9 @@ import math
 import numpy as np
 import networkx as nx
 import geopandas as gpd
+from typing import Any, Dict, Optional
 import time
 from shapely.geometry import Point, LineString
-from shapely.ops import split as shapely_split
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
 # from scripts.QGIS.save_route import save_route_to_shapefile
@@ -255,7 +255,7 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
 
     split_point = line.interpolate(proj)
 
-    def _split_line(line_obj, new_pt):
+    def _split_line(line_obj):
         coords = list(line_obj.coords)
         acc = 0.0
         new_coords1 = [coords[0]]
@@ -280,7 +280,7 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
             return None
         return LineString(new_coords1), LineString(new_coords2)
 
-    split_segments = _split_line(line, split_point)
+    split_segments = _split_line(line)
     if not split_segments:
         print("[snap] split result invalid, fallback to nearest node")
         node_id = _nearest_node(point_geom, node_ids_arr, node_coords_arr)
@@ -297,21 +297,6 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
     _add_edge_with_geometry(graph, new_node_id, v, seg_coords[1])
 
     return new_node_id, split_point
-
-
-def _ensure_anchor_node(node_id, point_geom, graph, node_positions, node_ids_arr, node_coords_arr):
-    if node_id in node_positions:
-        return node_ids_arr, node_coords_arr
-    snapped_id, snapped_point = _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_coords_arr)
-    node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
-    node_positions[node_id] = (point_geom.x, point_geom.y)
-    _add_edge_with_geometry(
-        graph,
-        node_id,
-        snapped_id,
-        [(point_geom.x, point_geom.y), (snapped_point.x, snapped_point.y)],
-    )
-    return node_ids_arr, node_coords_arr
 
 def run_dlite_algorithm(
     loads_path=os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
@@ -410,13 +395,9 @@ def run_dlite_algorithm(
 
     if start_node_id is not None:
         start_id = _normalize_node_id(start_node_id)
-        if start_id in node_positions and start_point is None:
+        if start_point is None and start_id in node_positions:
             sx, sy = node_positions[start_id]
             start_point = Point(sx, sy)
-        if start_id not in node_positions:
-            node_ids_arr, node_coords_arr = _ensure_anchor_node(
-                start_id, start_point, G, node_positions, node_ids_arr, node_coords_arr
-            )
     else:
         snapped_id, snapped_point = _insert_point_on_edge(start_point, G, node_positions, node_ids_arr, node_coords_arr)
         node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
@@ -446,10 +427,6 @@ def run_dlite_algorithm(
         point = cand["point"]
         if idx < len(goal_ids):
             node_id = goal_ids[idx]
-            if node_id not in node_positions:
-                node_ids_arr, node_coords_arr = _ensure_anchor_node(
-                    node_id, point, G, node_positions, node_ids_arr, node_coords_arr
-                )
             snapped_point = Point(node_positions.get(node_id, (point.x, point.y)))
         else:
             node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
@@ -490,7 +467,7 @@ def run_dlite_algorithm(
                 G[u][v]["weight"] = float("inf")
 
     print(f"[D*Lite] ゴール候補ノード: {goal_nodes}")
-    best_result = None
+    best_result: Optional[Dict[str, Any]] = None
 
     for idx, goal_node in enumerate(goal_nodes):
         goal_meta = goal_metadata.get(goal_node)
@@ -526,7 +503,7 @@ def run_dlite_algorithm(
         )
         print(f"[D*Lite] goal {goal_node} total_dist={total_dist}")
 
-        if best_result is None or total_dist < best_result["distance"]:
+        if best_result is None or total_dist < best_result.get("distance", float("inf")):
             best_result = {
                 "route": route,
                 "distance": total_dist,
