@@ -29,6 +29,7 @@ class DStarLite:
         self.node_positions: MutableMapping[int, Tuple[float, float]] = node_positions
 
         self.U: List[Tuple[Tuple[float, float], int]] = [] # キー付きオープン道路リスト
+        self.queue_keys: Dict[int, Optional[Tuple[float, float]]] = {}
 
         self.km: float = 0.0 # 出発地点の移動距離
         self.last_start: int = start  # km更新用
@@ -44,7 +45,9 @@ class DStarLite:
         else:
             for goal_node in self.goal_nodes:
                 self.rhs[goal_node] = 0.0
-                heapq.heappush(self.U, (self._calculate_key(goal_node), goal_node))
+                key = self._calculate_key(goal_node)
+                self.queue_keys[goal_node] = key
+                heapq.heappush(self.U, (key, goal_node))
 
     def _log(self, *args: Any) -> None:
         if self.debug:
@@ -95,16 +98,21 @@ class DStarLite:
         self._log(f"[DV] → updated rhs[{u}] = {self.rhs[u]}")
         self._log(f"[DV] g[{u}]={self.g[u]}, rhs[{u}]={self.rhs[u]} → pushing to U={self.g[u] != self.rhs[u]}")
 
-        self.U = [(k, n) for k, n in self.U if n != u]#オープン道路リストから削除
-        heapq.heapify(self.U)
-
-        # --- rhs と g が異なる場合に再びオープン道路リストに追加 ---
         if self.g[u] != self.rhs[u]:
-            heapq.heappush(self.U, (self._calculate_key(u), u))
+            key = self._calculate_key(u)
+            self.queue_keys[u] = key
+            heapq.heappush(self.U, (key, u))
+        else:
+            self.queue_keys[u] = None
 
     # --- 最短経路探索 ---
     def compute_shortest_path(self) -> None:
         while self.U:
+            # 無効なエントリをスキップ
+            while self.U and self.queue_keys.get(self.U[0][1]) != self.U[0][0]:
+                heapq.heappop(self.U)
+            if not self.U:
+                break
             self._log("[LOOP] top of compute_shortest_path")
             self._log("   U.min_key() =", self.U[0][0] if self.U else None)
             self._log("   key(start) =", self._calculate_key(self.start))
@@ -117,6 +125,9 @@ class DStarLite:
                 break #スタートノードのキーが最小で、rhsとgが等しい場合は終了
 
             _, u = heapq.heappop(self.U)
+            if self.queue_keys.get(u) != top_key:
+                continue
+            self.queue_keys[u] = None
 
             if self.g[u] > self.rhs[u]:
                 self.g[u] = self.rhs[u]#gがrhsより大きい場合、rhsをgに更新
@@ -261,11 +272,13 @@ class DStarLite:
         self.g.update({int(n): float(v) for n, v in state.get("g", {}).items()})
         self.rhs.update({int(n): float(v) for n, v in state.get("rhs", {}).items()})
         self.U = []
+        self.queue_keys = {}
         for item in state.get("U", []):
             if isinstance(item, (list, tuple)) and len(item) == 3:
                 node = int(item[0])
                 key = (float(item[1]), float(item[2]))
                 heapq.heappush(self.U, (key, node))
+                self.queue_keys[node] = key
         self.km = float(state.get("km", 0.0))
         self.start = int(state.get("start", self.start))
         self.last_start = int(state.get("last_start", self.start))

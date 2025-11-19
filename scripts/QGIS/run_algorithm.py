@@ -682,9 +682,6 @@ def run_dlite_algorithm(
     dlite_state = best_result["dlite_state"]
     route_coords = build_route_coords(route, G, node_positions)
 
-    print(f"📏 距離: {total_dist:.2f} m")
-    print(f"🛣️ ノード数: {len(route)}")
-
     selected_goal_meta = goal_metadata.get(reached_goal_id)
     if selected_goal_meta:
         selected_goal_point = selected_goal_meta["goal_point"]
