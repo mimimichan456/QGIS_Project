@@ -7,7 +7,6 @@ from psycopg2 import pool
 
 load_dotenv()
 
-
 def _get_connection():
     if not hasattr(_get_connection, "pool"):
         _get_connection.pool = pool.SimpleConnectionPool(

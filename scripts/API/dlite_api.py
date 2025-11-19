@@ -245,8 +245,18 @@ def reroute(payload: BlockRoadRequest):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    new_edge = {"u": nearest_edge["edge"][0], "v": nearest_edge["edge"][1]}
-    if new_edge not in blocked_edges:
+    new_edge = {
+        "u": nearest_edge["edge"][0],
+        "v": nearest_edge["edge"][1],
+        "blocked_point": {
+            "lon": payload.blocked_point.lon,
+            "lat": payload.blocked_point.lat,
+        },
+    }
+    already_blocked = any(
+        edge.get("u") == new_edge["u"] and edge.get("v") == new_edge["v"] for edge in blocked_edges
+    )
+    if not already_blocked:
         blocked_edges.append(new_edge)
 
     initial_state = {
@@ -263,8 +273,8 @@ def reroute(payload: BlockRoadRequest):
             start_node_id=session["start_id"],
             goal_node_id=goal_node_ids,
             initial_state=initial_state,
-            blocked_edges=[(edge["u"], edge["v"]) for edge in blocked_edges],
-            new_blocked_edges=[(new_edge["u"], new_edge["v"])],
+            blocked_edges=blocked_edges,
+            new_blocked_edges=[new_edge],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

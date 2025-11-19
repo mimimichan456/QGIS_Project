@@ -3,28 +3,28 @@ import math
 import numpy as np
 import networkx as nx
 import geopandas as gpd
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import time
 from shapely.geometry import Point, LineString
 from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.dlite_algorithm import DStarLite
-# from scripts.QGIS.save_route import save_route_to_shapefile
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
+EdgeUpdate = Dict[str, Any]
 
-def _ensure_point(point):
+def _ensure_point(point: Any) -> Point:
     if isinstance(point, Point):
         return point
     if isinstance(point, (tuple, list)) and len(point) == 2:
         return Point(float(point[0]), float(point[1]))
-    if isinstance(point, dict) and {"lon", "lat"} <= set(point):
+    if isinstance(point, dict) and "lon" in point and "lat" in point:
         return Point(float(point["lon"]), float(point["lat"]))
 
 #  ポイントの座標列正規化
-def _normalize_point_sequence(points):
+def _normalize_point_sequence(points: Any) -> List[Point]:
     if points is None:
         return []
     if isinstance(points, np.ndarray):
@@ -41,31 +41,24 @@ def _normalize_point_sequence(points):
         return [_ensure_point(seq)]
     return [_ensure_point(points)]
 
-# 通行止め道路のエッジ正規化
-def _normalize_edges(edges):
-    pairs = []
-    for edge in edges or []:
-        if isinstance(edge, dict):
-            u, v = edge.get("u"), edge.get("v")
-        else:
-            u, v = edge
-        if u is None or v is None:
-            continue
-        pairs.append((int(u), int(v)))
-    return list(dict.fromkeys(pairs))
-
 # 通行止め更新を統一
-def _normalize_edge_updates(edges):
-    updates = []
+def _normalize_edge_updates(edges: Optional[Iterable[Any]]) -> List[EdgeUpdate]:
+    updates: List[EdgeUpdate] = []
     for edge in edges or []:
         blocked = True
         weight = None
+        blocked_point = None
         if isinstance(edge, dict):
             u, v = edge.get("u"), edge.get("v")
             if "blocked" in edge:
                 blocked = bool(edge["blocked"])
             if "weight" in edge and edge["weight"] is not None:
                 weight = float(edge["weight"])
+            if "blocked_point" in edge and edge["blocked_point"]:
+                try:
+                    blocked_point = _ensure_point(edge["blocked_point"])
+                except (TypeError, ValueError):
+                    blocked_point = None
         else:
             if len(edge) == 3:
                 u, v, blocked = edge
@@ -81,6 +74,7 @@ def _normalize_edge_updates(edges):
                 "v": int(v),
                 "blocked": bool(blocked),
                 "weight": weight,
+                "point": blocked_point,
             }
         )
     dedup = {}
@@ -89,18 +83,18 @@ def _normalize_edge_updates(edges):
     return list(dedup.values())
 
 #  ポイントの座標を lon/lat タプルに変換
-def _point_to_lonlat(point: Point):
+def _point_to_lonlat(point: Point) -> Dict[str, float]:
     return {"lon": float(point.x), "lat": float(point.y)}
 
 #   numpy配列化して高速化
-def _node_lookup_arrays(node_positions):
+def _node_lookup_arrays(node_positions: Dict[int, Tuple[float, float]]) -> Tuple[np.ndarray, np.ndarray]:
     node_ids = np.array(list(node_positions.keys()), dtype=np.int64)
     node_coords = np.array(list(node_positions.values()), dtype=float)
     return node_ids, node_coords
 
 
 # ポイントからの最近某ノードを高速に探索
-def _nearest_node(point, node_ids, node_coords):
+def _nearest_node(point: Point, node_ids: np.ndarray, node_coords: np.ndarray) -> int:
     target = np.array([point.x, point.y], dtype=float)
     deltas = node_coords - target
     dist_sq = np.einsum("ij,ij->i", deltas, deltas)
@@ -108,7 +102,7 @@ def _nearest_node(point, node_ids, node_coords):
     return int(node_ids[min_idx])
 
 
-def _normalize_node_id(value):
+def _normalize_node_id(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, str):
@@ -124,7 +118,7 @@ def _normalize_node_id(value):
         return value
 
 
-def _serialize_node_id(value):
+def _serialize_node_id(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, (int, np.integer)):
@@ -142,7 +136,7 @@ def _serialize_node_id(value):
         return str(value)
 
 
-def _add_edge_with_geometry(graph, a, b, coords):
+def _add_edge_with_geometry(graph: nx.Graph, a: int, b: int, coords: Sequence[Tuple[float, float]]) -> None:
     line_geom = LineString(coords)
     length = float(line_geom.length)
     graph.add_edge(
@@ -158,7 +152,9 @@ def _coords_close(c1, c2, tol=1e-9):
     return abs(c1[0] - c2[0]) <= tol and abs(c1[1] - c2[1]) <= tol
 
 
-def build_route_coords(path, graph, node_positions):
+def build_route_coords(
+    path: Sequence[int], graph: nx.Graph, node_positions: Dict[int, Tuple[float, float]]
+) -> List[Tuple[float, float]]:
     route_coords = []
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
@@ -182,11 +178,11 @@ def build_route_coords(path, graph, node_positions):
     return route_coords
 
 
-def _simplify_route_nodes(nodes):
+def _simplify_route_nodes(nodes: Optional[Sequence[int]]) -> List[int]:
     if not nodes:
         return []
-    simplified = []
-    index_map = {}
+    simplified: List[int] = []
+    index_map: Dict[int, int] = {}
     for node in nodes:
         if node in index_map:
             loop_start = index_map[node]
@@ -199,7 +195,7 @@ def _simplify_route_nodes(nodes):
     return simplified
 
 
-def _find_nearest_edge(point_geom, graph):
+def _find_nearest_edge(point_geom: Point, graph: nx.Graph):
     best = None
     best_dist = float("inf")
     for u, v, data in graph.edges(data=True):
@@ -216,7 +212,7 @@ def _find_nearest_edge(point_geom, graph):
     return best
 
 
-def _generate_pseudo_node_id(node_positions):
+def _generate_pseudo_node_id(node_positions: Dict[int, Tuple[float, float]]) -> int:
     max_id = 0
     for key in node_positions:
         try:
@@ -231,7 +227,14 @@ def _generate_pseudo_node_id(node_positions):
     return new_id
 
 
-def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_coords_arr):
+def _insert_point_on_edge(
+    point_geom: Point,
+    graph: nx.Graph,
+    node_positions: Dict[int, Tuple[float, float]],
+    node_ids_arr: np.ndarray,
+    node_coords_arr: np.ndarray,
+    split_tracker: Optional[Dict[Tuple[int, int], List[Tuple[int, int]]]] = None,
+) -> Tuple[int, Point]:
     nearest = _find_nearest_edge(point_geom, graph)
     if not nearest:
         print("[snap] no nearest edge, fallback to nearest node")
@@ -240,6 +243,8 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
         return node_id, snapped
 
     u, v, line = nearest
+    u = int(u)
+    v = int(v)
     edge_data = graph[u][v]
     if not math.isfinite(edge_data.get("weight", float("inf"))):
         print(f"[snap] edge ({u},{v}) blocked, fallback to nearest node")
@@ -296,20 +301,122 @@ def _insert_point_on_edge(point_geom, graph, node_positions, node_ids_arr, node_
     _add_edge_with_geometry(graph, u, new_node_id, seg_coords[0])
     _add_edge_with_geometry(graph, new_node_id, v, seg_coords[1])
 
+    if split_tracker is not None:
+        forward_pairs = [(u, new_node_id), (new_node_id, v)]
+        reverse_pairs = [(v, new_node_id), (new_node_id, u)]
+        split_tracker[(u, v)] = forward_pairs
+        split_tracker[(v, u)] = reverse_pairs
+        print(f"[SNAP] split edge ({u}, {v}) -> {forward_pairs}")
+
     return new_node_id, split_point
 
+
+def _expand_split_edges(u: int, v: int, split_tracker: Dict[Tuple[int, int], List[Tuple[int, int]]]) -> List[Tuple[int, int]]:
+    targets = [(u, v)]
+    split_pairs = split_tracker.get((u, v)) or split_tracker.get((v, u))
+    if split_pairs:
+        print(f"[BLOCK DEBUG] original edge ({u}, {v}) has split pairs {split_pairs}")
+        targets.extend(split_pairs)
+    seen = set()
+    ordered = []
+    for src, dst in targets:
+        key = (int(src), int(dst))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(key)
+    return ordered
+
+
+def _edge_distance_to_point(
+    graph: nx.Graph, u: int, v: int, point_geom: Optional[Point]
+) -> Optional[float]:
+    if point_geom is None:
+        return None
+    data = graph.get(u, {}).get(v) if isinstance(graph, dict) else None
+    if data is None:
+        try:
+            data = graph[u][v]
+        except KeyError:
+            return None
+    coords = data.get("geometry")
+    if not coords:
+        return None
+    line = coords if isinstance(coords, LineString) else LineString(coords)
+    return line.distance(point_geom)
+
+
+def _select_block_targets(
+    u: int,
+    v: int,
+    split_tracker: Dict[Tuple[int, int], List[Tuple[int, int]]],
+    point_geom: Optional[Point],
+    graph: nx.Graph,
+) -> List[Tuple[int, int]]:
+    candidates = _expand_split_edges(u, v, split_tracker)
+    if point_geom is None or len(candidates) <= 1:
+        return candidates
+    distances = []
+    for src, dst in candidates:
+        dist = _edge_distance_to_point(graph, src, dst, point_geom)
+        if dist is None:
+            dist = float("inf")
+        distances.append(dist)
+    min_dist = min(distances) if distances else float("inf")
+    if not math.isfinite(min_dist):
+        return candidates
+    filtered = [
+        edge for edge, dist in zip(candidates, distances) if math.isfinite(dist) and abs(dist - min_dist) <= 1e-9
+    ]
+    return filtered or candidates
+
+
+def _merge_edge_updates(*update_lists: Optional[Iterable[EdgeUpdate]]) -> List[EdgeUpdate]:
+    merged: Dict[Tuple[int, int], EdgeUpdate] = {}
+    order: List[Tuple[int, int]] = []
+    for updates in update_lists:
+        for upd in updates or []:
+            u = int(upd["u"])
+            v = int(upd["v"])
+            key = (u, v)
+            if key not in order:
+                order.append(key)
+            merged[key] = {
+                "u": u,
+                "v": v,
+                "blocked": bool(upd.get("blocked", True)),
+                "weight": upd.get("weight"),
+                "point": upd.get("point"),
+            }
+    return [merged[key] for key in order]
+
+
+def _serialize_blocked_edges(updates: Optional[Iterable[EdgeUpdate]]) -> List[Dict[str, Any]]:
+    payload: List[Dict[str, Any]] = []
+    for upd in updates or []:
+        if not upd.get("blocked", True):
+            continue
+        item = {"u": int(upd["u"]), "v": int(upd["v"])}
+        point = upd.get("point")
+        if point is not None:
+            item["blocked_point"] = _point_to_lonlat(point)
+        payload.append(item)
+    return payload
+
+
+
 def run_dlite_algorithm(
-    loads_path=os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
-    start_point=None,
-    goal_point=None,
-    start_node_id=None,
-    goal_node_id=None,
-    initial_state=None,
-    blocked_edges=None,
-    new_blocked_edges=None,
-):
+    loads_path: str = os.path.join(DATA_DIR, "processed/roads/ube_roads.shp"),
+    start_point: Optional[Any] = None,
+    goal_point: Optional[Any] = None,
+    start_node_id: Optional[Any] = None,
+    goal_node_id: Optional[Any] = None,
+    initial_state: Optional[Dict[str, Any]] = None,
+    blocked_edges: Optional[Iterable[Any]] = None,
+    new_blocked_edges: Optional[Iterable[Any]] = None,
+) -> Dict[str, Any]:
     candidate_payload = []#避難所候補
     shelter_result = None
+    split_edge_tracker = {}
 
     # --- 出発点とゴール候補を避難所検索から取得 ---
     if start_point is None:
@@ -349,8 +456,11 @@ def run_dlite_algorithm(
             }
         )
 
-    blocked_edges = _normalize_edges(blocked_edges)
-    edge_updates = _normalize_edge_updates(new_blocked_edges)
+    raw_blocked_edges = blocked_edges or []
+    base_blocked_updates = _normalize_edge_updates(raw_blocked_edges)
+    incremental_updates = _normalize_edge_updates(new_blocked_edges)
+    edge_updates = _merge_edge_updates(base_blocked_updates, incremental_updates)
+    blocked_edges_payload = _serialize_blocked_edges(edge_updates)
 
     # --- 道路レイヤ読込＆グラフ生成 ---
     roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
@@ -362,7 +472,9 @@ def run_dlite_algorithm(
     for f in roads.itertuples(index=False):
         if f.geometry is None:
             continue
-        u, v = getattr(f, "u", None), getattr(f, "v", None)
+        u_raw, v_raw = getattr(f, "u", None), getattr(f, "v", None)
+        u = int(float(u_raw)) if u_raw is not None else None
+        v = int(float(v_raw)) if v_raw is not None else None
         if u is None or v is None:
             continue
 
@@ -377,14 +489,14 @@ def run_dlite_algorithm(
         if len(coords) < 2:
             continue
 
-        node_positions[u] = node_positions.get(u, coords[0])
-        node_positions[v] = node_positions.get(v, coords[-1])
+        node_positions[int(u)] = node_positions.get(int(u), coords[0])
+        node_positions[int(v)] = node_positions.get(int(v), coords[-1])
 
         length_attr = getattr(f, "length", None)
         edge_length = float(length_attr) if length_attr is not None else float(geom.length)
         G.add_edge(
-            u,
-            v,
+            int(u),
+            int(v),
             weight=edge_length,
             base_weight=edge_length,
             geometry=coords,
@@ -393,13 +505,24 @@ def run_dlite_algorithm(
     # --- 出発点・到着点を最寄りノードへスナップ ---
     node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
 
+    # --- START NODE FIX: ensure start_id exists in current graph ---
+    start_id = None
     if start_node_id is not None:
-        start_id = _normalize_node_id(start_node_id)
-        if start_point is None and start_id in node_positions:
-            sx, sy = node_positions[start_id]
-            start_point = Point(sx, sy)
-    else:
-        snapped_id, snapped_point = _insert_point_on_edge(start_point, G, node_positions, node_ids_arr, node_coords_arr)
+        tmp_id = _normalize_node_id(start_node_id)
+        # 前回のノードが今回のGに存在しなければ無視してスナップし直す
+        if tmp_id in G and tmp_id in node_positions:
+            start_id = tmp_id
+            if start_point is None:
+                sx, sy = node_positions[start_id]
+                start_point = Point(sx, sy)
+        else:
+            # 存在しない場合はスナップを強制
+            start_node_id = None
+
+    if start_node_id is None:
+        snapped_id, snapped_point = _insert_point_on_edge(
+            start_point, G, node_positions, node_ids_arr, node_coords_arr, split_edge_tracker
+        )
         node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
         start_anchor_id = _generate_pseudo_node_id(node_positions)
         node_positions[start_anchor_id] = (start_point.x, start_point.y)
@@ -411,13 +534,18 @@ def run_dlite_algorithm(
             [(start_point.x, start_point.y), (snapped_point.x, snapped_point.y)],
         )
 
+    # --- GOAL NODE FIX: ensure goal IDs exist in current graph ---
+    raw_goal_ids = []
     if goal_node_id is not None:
         if isinstance(goal_node_id, (list, tuple, set)):
-            goal_ids = [_normalize_node_id(g) for g in goal_node_id]
+            raw_goal_ids = [_normalize_node_id(g) for g in goal_node_id]
         else:
-            goal_ids = [_normalize_node_id(goal_node_id)]
+            raw_goal_ids = [_normalize_node_id(goal_node_id)]
     else:
-        goal_ids = []
+        raw_goal_ids = []
+
+    # 存在しないゴール ID を除外
+    goal_ids = [gid for gid in raw_goal_ids if gid in G and gid in node_positions]
 
     goal_nodes = []
     goal_metadata = {}
@@ -425,13 +553,22 @@ def run_dlite_algorithm(
 
     for idx, cand in enumerate(goal_candidates):
         point = cand["point"]
-        if idx < len(goal_ids):
-            node_id = goal_ids[idx]
-            snapped_point = Point(node_positions.get(node_id, (point.x, point.y)))
-        else:
+
+        use_existing = idx < len(goal_ids)
+        node_id = None
+
+        if use_existing:
+            gid = goal_ids[idx]
+            if gid in G and gid in node_positions:
+                node_id = gid
+                snapped_point = Point(node_positions[gid])
+            else:
+                use_existing = False
+
+        if not use_existing:
             node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
             snapped_id, snapped_point = _insert_point_on_edge(
-                point, G, node_positions, node_ids_arr, node_coords_arr
+                point, G, node_positions, node_ids_arr, node_coords_arr, split_edge_tracker
             )
             node_ids_arr, node_coords_arr = _node_lookup_arrays(node_positions)
             goal_anchor_id = _generate_pseudo_node_id(node_positions)
@@ -459,40 +596,64 @@ def run_dlite_algorithm(
             }
         )
 
+    def _run_single_planner(dlite_instance: DStarLite) -> Tuple[List[int], Optional[List[int]]]:
+        if edge_updates:
+            for upd in edge_updates:
+                u, v = upd["u"], upd["v"]
+                point_geom = upd.get("point")
+                targets = _select_block_targets(u, v, split_edge_tracker, point_geom, G)
+                point_str = (
+                    f"({point_geom.x:.6f}, {point_geom.y:.6f})" if point_geom is not None else "None"
+                )
+                if upd["weight"] is not None:
+                    weight_to_apply = upd["weight"]
+                elif upd["blocked"]:
+                    weight_to_apply = float("inf")
+                else:
+                    weight_to_apply = None
 
-    # --- 通行止め適用 ---
-    if blocked_edges:
-        for u, v in blocked_edges:
-            if G.has_edge(u, v):
-                G[u][v]["weight"] = float("inf")
+                for tu, tv in targets:
+                    print(
+                        f"[DEBUG] update_edge_cost: u={tu}, v={tv}, blocked={upd['blocked']}, weight={upd['weight']}, point={point_str}"
+                    )
+                    dlite_instance.update_edge_cost(tu, tv, weight_to_apply)
 
-    print(f"[D*Lite] ゴール候補ノード: {goal_nodes}")
+        start_compute = time.time()
+        dlite_instance.compute_shortest_path()
+        elapsed = time.time() - start_compute
+        print(f"[D*Lite] goal {goal_node} compute 実行時間: {elapsed:.2f} 秒")
+        print("[D*Lite] extract_path 開始")
+        raw_route = dlite_instance.extract_path()
+        print(f"[D*Lite] extract_path 結果: {raw_route[:10] if raw_route else raw_route}")
+        route = _simplify_route_nodes(raw_route)
+        return route, raw_route
+
     best_result: Optional[Dict[str, Any]] = None
 
     for idx, goal_node in enumerate(goal_nodes):
         goal_meta = goal_metadata.get(goal_node)
         dlite_state = initial_state if idx == 0 and initial_state else None
-        dlite = DStarLite(G, start_id, [goal_node], node_positions, initial_state=dlite_state)
+        state_candidates = [("incremental", dlite_state)] if dlite_state else []
+        state_candidates.append(("fresh", None))
 
-        if edge_updates:
-            for upd in edge_updates:
-                u, v = upd["u"], upd["v"]
-                if upd["weight"] is not None:
-                    dlite.update_edge_cost(u, v, upd["weight"])
-                elif upd["blocked"]:
-                    dlite.update_edge_cost(u, v, float("inf"))
-                else:
-                    dlite.update_edge_cost(u, v, None)
+        route = None
+        final_dlite = None
 
-        start_compute = time.time()
-        dlite.compute_shortest_path()
-        elapsed = time.time() - start_compute
-        print(f"[D*Lite] goal {goal_node} compute 実行時間: {elapsed:.2f} 秒")
-        print("[D*Lite] extract_path 開始")
-        raw_route = dlite.extract_path()
-        print(f"[D*Lite] extract_path 結果: {raw_route[:10] if raw_route else raw_route}")
-        route = _simplify_route_nodes(raw_route)
-        if not route or dlite.get_reached_goal() != goal_node:
+        for attempt_label, state_payload in state_candidates:
+            dlite = DStarLite(G, start_id, [goal_node], node_positions, initial_state=state_payload)
+            route, _ = _run_single_planner(dlite)
+            final_dlite = dlite
+            if route and dlite.get_reached_goal() == goal_node:
+                break
+
+            if attempt_label == "fresh":
+                route = None
+                break
+
+            print("[ROUTE DEBUG] incremental計算で経路が得られなかったため、初期状態から再計算します。")
+
+        reached_goal = final_dlite.get_reached_goal() if final_dlite else None
+        if not route or reached_goal != goal_node:
             print(f"[D*Lite] goal {goal_node} route not found")
             continue
 
@@ -508,7 +669,7 @@ def run_dlite_algorithm(
                 "route": route,
                 "distance": total_dist,
                 "goal_id": goal_node,
-                "dlite_state": dlite.export_state(),
+                "dlite_state": final_dlite.export_state(),
                 "goal_meta": goal_meta,
             }
 
@@ -547,12 +708,10 @@ def run_dlite_algorithm(
         "goal_node_ids": [_serialize_node_id(g) for g in goal_nodes],
         "goal_candidates": goal_candidates_payload,
         "selected_shelter_attr": selected_goal_attr,
-        "blocked_edges": [{"u": int(u), "v": int(v)} for u, v in (blocked_edges or [])],
+        "blocked_edges": blocked_edges_payload,
         "dlite_state": dlite_state,
     }
 
 
 if __name__ == "__main__":
     result = run_dlite_algorithm()
-
-    # save_route_to_shapefile(result)
