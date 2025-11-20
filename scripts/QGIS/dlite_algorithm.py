@@ -42,6 +42,7 @@ class DStarLite:
 
         if initial_state:
             self._load_state(initial_state) #再探索時の状態復元
+            self.set_start(start)
         else:
             for goal_node in self.goal_nodes:
                 self.rhs[goal_node] = 0.0

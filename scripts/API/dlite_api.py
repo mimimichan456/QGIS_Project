@@ -66,6 +66,7 @@ class DliteRouteResponse(BaseModel):
 class BlockRoadRequest(BaseModel):
     session_id: str
     blocked_point: Coordinate
+    start_point: Optional[Coordinate] = None
 
 
 class ResetBlockedPointRequest(BaseModel):
@@ -230,7 +231,12 @@ def reroute(payload: BlockRoadRequest):
         raise HTTPException(status_code=500, detail="Session is missing start/goal coordinates")
 
     blocked_edges = session.get("blocked_edges") or []
-    start_point = session["start_point"]
+    start_point = (
+        _coordinate_to_dict(payload.start_point)
+        if payload.start_point
+        else session["start_point"]
+    )
+    start_coord_model = payload.start_point or _point_to_coordinate(start_point)
     goal_points = session.get("goal_points") or []
     if not goal_points and session.get("goal_point"):
         goal_points = [session["goal_point"]]
@@ -287,7 +293,7 @@ def reroute(payload: BlockRoadRequest):
         raise HTTPException(status_code=404, detail="Route not found")
 
     result["blocked_edges"] = blocked_edges
-    _persist_session(payload.session_id, result, _point_to_coordinate(start_point))
+    _persist_session(payload.session_id, result, start_coord_model)
     if SAVE_ROUTE_GEOJSON:
         save_route_geojson(payload.session_id, result["route_coords"])
     return _build_response(payload.session_id, result)
