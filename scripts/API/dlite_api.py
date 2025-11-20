@@ -231,11 +231,12 @@ def reroute(payload: BlockRoadRequest):
         raise HTTPException(status_code=500, detail="Session is missing start/goal coordinates")
 
     blocked_edges = session.get("blocked_edges") or []
-    start_point = (
-        _coordinate_to_dict(payload.start_point)
-        if payload.start_point
-        else session["start_point"]
-    )
+    start_node_id = session["start_id"]
+    if payload.start_point:
+        start_point = _coordinate_to_dict(payload.start_point)
+        start_node_id = None
+    else:
+        start_point = session["start_point"]
     start_coord_model = payload.start_point or _point_to_coordinate(start_point)
     goal_points = session.get("goal_points") or []
     if not goal_points and session.get("goal_point"):
@@ -276,7 +277,7 @@ def reroute(payload: BlockRoadRequest):
         result = run_dlite_algorithm(
             start_point=start_point,
             goal_point=goal_points,
-            start_node_id=session["start_id"],
+            start_node_id=start_node_id,
             goal_node_id=goal_node_ids,
             initial_state=initial_state,
             blocked_edges=blocked_edges,

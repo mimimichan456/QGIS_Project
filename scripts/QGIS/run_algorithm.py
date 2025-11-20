@@ -252,6 +252,22 @@ def _insert_point_on_edge(
         snapped = Point(node_positions[node_id])
         return node_id, snapped
 
+    # 既存エッジの向きをノード座標に合わせて正規化
+    line_coords = list(line.coords)
+    node_u = node_positions.get(u)
+    node_v = node_positions.get(v)
+    reverse_line = False
+    if node_u and node_v:
+        start_matches_u = _coords_close(line_coords[0], node_u)
+        end_matches_v = _coords_close(line_coords[-1], node_v)
+        start_matches_v = _coords_close(line_coords[0], node_v)
+        end_matches_u = _coords_close(line_coords[-1], node_u)
+        if start_matches_v and end_matches_u and not (start_matches_u and end_matches_v):
+            reverse_line = True
+    if reverse_line:
+        line_coords = list(reversed(line_coords))
+        line = LineString(line_coords)
+
     proj = line.project(point_geom)
     if proj <= 1e-9:
         return u, Point(node_positions[u])
@@ -512,8 +528,9 @@ def run_dlite_algorithm(
         # 前回のノードが今回のGに存在しなければ無視してスナップし直す
         if tmp_id in G and tmp_id in node_positions:
             start_id = tmp_id
+            sx, sy = node_positions[start_id]
+            print(f"[SNAP DEBUG] reuse start node {start_id} at ({sx:.6f}, {sy:.6f})")
             if start_point is None:
-                sx, sy = node_positions[start_id]
                 start_point = Point(sx, sy)
         else:
             # 存在しない場合はスナップを強制
@@ -532,6 +549,12 @@ def run_dlite_algorithm(
             start_id,
             snapped_id,
             [(start_point.x, start_point.y), (snapped_point.x, snapped_point.y)],
+        )
+        print(
+            "[SNAP DEBUG] created start anchor "
+            f"{start_id} -> snapped {snapped_id} "
+            f"input=({start_point.x:.6f}, {start_point.y:.6f}) "
+            f"snap=({snapped_point.x:.6f}, {snapped_point.y:.6f})"
         )
 
     # --- GOAL NODE FIX: ensure goal IDs exist in current graph ---
@@ -562,6 +585,11 @@ def run_dlite_algorithm(
             if gid in G and gid in node_positions:
                 node_id = gid
                 snapped_point = Point(node_positions[gid])
+                print(
+                    "[SNAP DEBUG] goal candidate "
+                    f"{idx} reuse node {node_id} "
+                    f"coords=({snapped_point.x:.6f}, {snapped_point.y:.6f})"
+                )
             else:
                 use_existing = False
 
@@ -580,6 +608,12 @@ def run_dlite_algorithm(
                 [(snapped_point.x, snapped_point.y), (point.x, point.y)],
             )
             node_id = goal_anchor_id
+            print(
+                "[SNAP DEBUG] created goal anchor "
+                f"{node_id} linked via snapped {snapped_id} "
+                f"candidate=({point.x:.6f}, {point.y:.6f}) "
+                f"snap=({snapped_point.x:.6f}, {snapped_point.y:.6f})"
+            )
 
         cand["node_id"] = node_id
 
@@ -596,7 +630,9 @@ def run_dlite_algorithm(
             }
         )
 
-    def _run_single_planner(dlite_instance: DStarLite) -> Tuple[List[int], Optional[List[int]]]:
+    def _run_single_planner(
+        dlite_instance: DStarLite,
+    ) -> Tuple[List[int], Optional[List[int]]]:
         if edge_updates:
             for upd in edge_updates:
                 u, v = upd["u"], upd["v"]
