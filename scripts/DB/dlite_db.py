@@ -1,24 +1,20 @@
 import json
 import os
-from psycopg2.extras import Json
+import requests
 from dotenv import load_dotenv
 from typing import Any, Dict, List, Optional
-from psycopg2 import pool
 
 load_dotenv()
 
-def _get_connection():
-    if not hasattr(_get_connection, "pool"):
-        _get_connection.pool = pool.SimpleConnectionPool(
-            1, 10, os.getenv("DATABASE_URL"), sslmode="require"
-        )
-    return _get_connection.pool.getconn()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
-
-def _put_connection(conn):
-    if hasattr(_get_connection, "pool"):
-        _get_connection.pool.putconn(conn)
-
+headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "resolution=merge-duplicates",
+}
 
 def save_session_state(
     session_id: str,
@@ -39,68 +35,64 @@ def save_session_state(
         "goal_points": goal_points,
         "goal_node_ids": goal_node_ids,
     }
-    query = """
-        INSERT INTO dlite_db (session_id, g, rhs, U, start_id, goal_id, blocked_edges)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (session_id)
-        DO UPDATE SET g = EXCLUDED.g, rhs = EXCLUDED.rhs, U = EXCLUDED.U,
-                      start_id = EXCLUDED.start_id, goal_id = EXCLUDED.goal_id,
-                      blocked_edges = EXCLUDED.blocked_edges,
-                      updated_at = CURRENT_TIMESTAMP;
-    """
-    _execute_query(
-        query,
-        (
-            session_id,
-            Json(g),
-            Json(rhs),
-            Json(queue),
-            int(start_id),
-            int(goal_id),
-            Json(blocked_payload),
-        ),
-    )
 
-def _execute_query(query, params=(), fetch=False):
-    conn = _get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            if fetch:
-                return cur.fetchone()
-            conn.commit()
-    finally:
-        _put_connection(conn)
+    url = f"{SUPABASE_URL}/rest/v1/dlite_db?on_conflict=session_id"
+    payload = {
+        "session_id": session_id,
+        "g": g,
+        "rhs": rhs,
+        "u": queue,
+        "start_id": int(start_id),
+        "goal_id": int(goal_id),
+        "blocked_edges": blocked_payload
+    }
 
+    res = requests.post(url, headers=headers, json=payload, timeout=10)
 
-def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
-    query = """
-        SELECT g, rhs, U, start_id, goal_id, blocked_edges
-        FROM public.dlite_db
-        WHERE session_id = %s;
-    """
-    row = _execute_query(query, (session_id,), fetch=True)
-
-    if not row:
+    # 成功時（200, 201）はログも JSON パースも行わない
+    if res.status_code in (200, 201):
         return None
 
-    g, rhs, queue, start_id, goal_id, blocked_json = row
-    if isinstance(blocked_json, str):
-        blocked_payload = json.loads(blocked_json)
-    else:
-        blocked_payload = blocked_json or {}
+    # 失敗時のみエラーを表示
+    print("DEBUG_SAVE_FAIL:", res.status_code, res.text)
+
+    try:
+        return res.json()
+    except ValueError:
+        print("DEBUG_JSON_PARSE_FAIL(save):", res.status_code, res.text)
+        return {"error": res.text, "status_code": res.status_code}
+
+def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
+    url = f"{SUPABASE_URL}/rest/v1/dlite_db?session_id=eq.{session_id}&select=*"
+    res = requests.get(url, headers=headers, timeout=10)
+    if res.status_code != 200:
+        print("DEBUG_LOAD_FAIL:", res.status_code, res.text)
+    try:
+        rows = res.json()
+    except (ValueError, json.JSONDecodeError):
+        print("DEBUG_JSON_PARSE_FAIL(load):", res.status_code, res.text)
+        return None
+
+    if not rows:
+        return None
+
+    row = rows[0]
+
+    blocked_payload = row.get("blocked_edges") or {}
+    if isinstance(blocked_payload, str):
+        blocked_payload = json.loads(blocked_payload)
 
     goal_points = blocked_payload.get("goal_points") or []
     if not goal_points and blocked_payload.get("goal_point"):
         goal_points = [blocked_payload.get("goal_point")]
 
     return {
-        "g": g or {},
-        "rhs": rhs or {},
-        "queue": queue or [],
+        "g": row.get("g") or {},
+        "rhs": row.get("rhs") or {},
+        "queue": row.get("u") or [],
         "km": 0,
-        "start_id": int(start_id),
-        "goal_id": int(goal_id),
+        "start_id": int(row.get("start_id")),
+        "goal_id": int(row.get("goal_id")),
         "blocked_edges": blocked_payload.get("edges", []),
         "start_point": blocked_payload.get("start_point"),
         "goal_points": goal_points,
@@ -108,18 +100,20 @@ def load_session_state(session_id: str) -> Optional[Dict[str, Any]]:
         "goal_node_ids": blocked_payload.get("goal_node_ids") or [],
     }
 
-
 def reset_blocked_point(session_id: str) -> bool:
-    query = """
-        SELECT blocked_edges
-        FROM public.dlite_db
-        WHERE session_id = %s;
-    """
-    row = _execute_query(query, (session_id,), fetch=True)
-    if not row:
+    url = f"{SUPABASE_URL}/rest/v1/dlite_db?session_id=eq.{session_id}&select=blocked_edges"
+    res = requests.get(url, headers=headers, timeout=10)
+    try:
+        rows = res.json()
+    except (ValueError, json.JSONDecodeError):
+        print("DEBUG_JSON_PARSE_FAIL(reset):", res.status_code, res.text)
         return False
 
-    blocked_json = row[0]
+    if not rows:
+        return False
+
+    blocked_json = rows[0].get("blocked_edges")
+
     if isinstance(blocked_json, str):
         payload = json.loads(blocked_json) if blocked_json else {}
     else:
@@ -128,11 +122,9 @@ def reset_blocked_point(session_id: str) -> bool:
     payload["blocked_point"] = {}
     payload["edges"] = []
 
-    update_query = """
-        UPDATE dlite_db
-        SET blocked_edges = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE session_id = %s;
-    """
-    _execute_query(update_query, (Json(payload), session_id))
-    return True
+    update_url = f"{SUPABASE_URL}/rest/v1/dlite_db?session_id=eq.{session_id}"
+    res2 = requests.patch(update_url, headers=headers, json={"blocked_edges": payload}, timeout=10)
+    if res2.status_code not in (200, 204):
+        print("DEBUG_UPDATE_FAIL:", res2.status_code, res2.text)
+
+    return res2.status_code in (200, 204)
