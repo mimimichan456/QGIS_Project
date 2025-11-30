@@ -5,9 +5,8 @@ from typing import List, Optional
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from scripts.QGIS.find_shelter import find_nearest_shelter
 from scripts.QGIS.run_algorithm import run_dlite_algorithm
-from scripts.QGIS.find_load import find_nearest_road_edge
+from scripts.QGIS.find_road import find_nearest_road_edge
 from scripts.DB.dlite_db import (
     save_session_state,
     load_session_state,
@@ -23,26 +22,15 @@ class Coordinate(BaseModel):
     lon: float = Field(..., ge=-180, le=180, description="Longitude in EPSG:4326")
     lat: float = Field(..., ge=-90, le=90, description="Latitude in EPSG:4326")
 
-
-class FindShelterRequest(BaseModel):
-    start_point: Coordinate
-
-
-class ShelterCandidate(BaseModel):
-    goal_point: Coordinate
-    shelter_attr: dict
-    distance_m: float
-
-
-class FindShelterResponse(BaseModel):
-    start_point: Coordinate
-    candidates: List[ShelterCandidate]
-
-
 class DliteRouteRequest(BaseModel):
     session_id: Optional[str] = None
     start_point: Coordinate
-    goal_point: List[Coordinate]
+    goal_point: Optional[List[Coordinate]] = None
+    shelter_top_k: int = Field(
+        1,
+        ge=1,
+        description="ゴール未指定時に探索する避難所候補数（上位n件）",
+    )
 
 
 class BlockedEdge(BaseModel):
@@ -175,40 +163,20 @@ def _build_response(session_id: str, result) -> DliteRouteResponse:
     )
 
 
-@app.post("/find-shelter", response_model=FindShelterResponse)
-def find_shelter(payload: FindShelterRequest):
-    try:
-        result = find_nearest_shelter(
-            start_point=(payload.start_point.lon, payload.start_point.lat)
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except TypeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="Internal server error") from exc
-
-    return FindShelterResponse(
-        start_point=_point_to_coordinate(result["start_point"]),
-        candidates=[
-            ShelterCandidate(
-                goal_point=_point_to_coordinate(item["goal_point"]),
-                shelter_attr=item.get("shelter_attr", {}),
-                distance_m=item.get("distance_m", 0.0),
-            )
-            for item in result.get("candidate_shelters", [])
-        ],
-    )
-
-
 @app.post("/run-dlite", response_model=DliteRouteResponse)
 def compute_route(payload: DliteRouteRequest):
     session_id = payload.session_id or str(uuid4())
 
     try:
+        goal_payload = (
+            [{"lon": p.lon, "lat": p.lat} for p in payload.goal_point]
+            if payload.goal_point
+            else None
+        )
         result = run_dlite_algorithm(
             start_point=(payload.start_point.lon, payload.start_point.lat),
-            goal_point=[{"lon": p.lon, "lat": p.lat} for p in payload.goal_point],
+            goal_point=goal_payload,
+            shelter_top_k=payload.shelter_top_k,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

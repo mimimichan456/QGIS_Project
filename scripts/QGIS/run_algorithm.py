@@ -429,19 +429,25 @@ def run_dlite_algorithm(
     initial_state: Optional[Dict[str, Any]] = None,
     blocked_edges: Optional[Iterable[Any]] = None,
     new_blocked_edges: Optional[Iterable[Any]] = None,
+    shelter_top_k: int = 1,
 ) -> Dict[str, Any]:
     candidate_payload = []#避難所候補
     shelter_result = None
     split_edge_tracker = {}
 
     # --- 出発点とゴール候補を避難所検索から取得 ---
+    if shelter_top_k is not None and shelter_top_k <= 0:
+        raise ValueError("shelter_top_k must be >= 1")
+
     if start_point is None:
-        shelter_result = find_nearest_shelter()
+        shelter_result = find_nearest_shelter(top_k=shelter_top_k)
         start_point = shelter_result["start_point"]
 
     if goal_point is None:
         if shelter_result is None:
-            shelter_result = find_nearest_shelter(start_point=start_point)
+            shelter_result = find_nearest_shelter(
+                start_point=start_point, top_k=shelter_top_k
+            )
         candidate_payload = shelter_result.get("candidate_shelters", [])
         goal_point = [item["goal_point"] for item in candidate_payload]
 
