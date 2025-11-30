@@ -1,6 +1,7 @@
 # --- FastAPI Core ---
 fastapi
 uvicorn[standard]
+requests
 
 # --- Data Processing ---
 pydantic
