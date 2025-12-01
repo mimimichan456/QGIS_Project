@@ -312,10 +312,25 @@ def _insert_point_on_edge(
     node_positions[new_node_id] = (split_point.x, split_point.y)
 
     seg_coords = [list(split_segments[0].coords), list(split_segments[1].coords)]
+    edge_data = graph.get_edge_data(u, v, default={})
+    original_weight = edge_data.get("base_weight", edge_data.get("weight"))
+    orig_length = line.length if line is not None else None
+
+    def _scaled_weight(seg_line):
+        seg_len = seg_line.length
+        if original_weight is None or orig_length is None or orig_length <= 0:
+            return seg_len
+        return float(original_weight) * (seg_len / orig_length)
+
     graph.remove_edge(u, v)
 
     _add_edge_with_geometry(graph, u, new_node_id, seg_coords[0])
+    graph[u][new_node_id]["weight"] = _scaled_weight(split_segments[0])
+    graph[u][new_node_id]["base_weight"] = graph[u][new_node_id]["weight"]
+
     _add_edge_with_geometry(graph, new_node_id, v, seg_coords[1])
+    graph[new_node_id][v]["weight"] = _scaled_weight(split_segments[1])
+    graph[new_node_id][v]["base_weight"] = graph[new_node_id][v]["weight"]
 
     if split_tracker is not None:
         forward_pairs = [(u, new_node_id), (new_node_id, v)]
@@ -485,22 +500,25 @@ def run_dlite_algorithm(
     blocked_edges_payload = _serialize_blocked_edges(edge_updates)
 
     # --- 道路レイヤ読込＆グラフ生成 ---
-    roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length"])
+    roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length", "E*"])
+    roads = roads[roads.geometry.notnull()]
+    has_e_star = "E*" in roads.columns
+    has_length_col = "length" in roads.columns
 
     # --- グラフ構築 ---
     G = nx.Graph()
     node_positions = {}
 
-    for f in roads.itertuples(index=False):
-        if f.geometry is None:
+    for _, row in roads.iterrows():
+        geom = row.geometry
+        if geom is None:
             continue
-        u_raw, v_raw = getattr(f, "u", None), getattr(f, "v", None)
+        u_raw, v_raw = row.get("u"), row.get("v")
         u = int(float(u_raw)) if u_raw is not None else None
         v = int(float(v_raw)) if v_raw is not None else None
         if u is None or v is None:
             continue
 
-        geom = f.geometry
         if geom.geom_type == "MultiLineString":
             if not geom.geoms:
                 continue
@@ -511,14 +529,18 @@ def run_dlite_algorithm(
         if len(coords) < 2:
             continue
 
-        node_positions[int(u)] = node_positions.get(int(u), coords[0])
-        node_positions[int(v)] = node_positions.get(int(v), coords[-1])
+        node_positions[u] = node_positions.get(u, coords[0])
+        node_positions[v] = node_positions.get(v, coords[-1])
 
-        length_attr = getattr(f, "length", None)
+        length_attr = None
+        if has_e_star:
+            length_attr = row.get("E*")
+        if length_attr is None and has_length_col:
+            length_attr = row.get("length")
         edge_length = float(length_attr) if length_attr is not None else float(geom.length)
         G.add_edge(
-            int(u),
-            int(v),
+            u,
+            v,
             weight=edge_length,
             base_weight=edge_length,
             geometry=coords,

@@ -15,6 +15,7 @@
 *.cpg
 *.db
 *.qgz
+*.tif
 
 __pycache__/
 .DS_Store
