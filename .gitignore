@@ -16,12 +16,15 @@
 *.db
 *.qgz
 *.tif
+*.qix
+*.gpkg
 
 __pycache__/
 .DS_Store
 .vscode/
 .venv/
 *.env
+cache/
 
 scripts/GET_DATA
 scripts/QGIS/save_route.py
