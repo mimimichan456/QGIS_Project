@@ -500,7 +500,7 @@ def run_dlite_algorithm(
     blocked_edges_payload = _serialize_blocked_edges(edge_updates)
 
     # --- 道路レイヤ読込＆グラフ生成 ---
-    roads = gpd.read_file(loads_path, usecols=["geometry", "u", "v", "length", "E*"])
+    roads = gpd.read_file(loads_path)
     roads = roads[roads.geometry.notnull()]
     has_e_star = "E*" in roads.columns
     has_length_col = "length" in roads.columns
